@@ -1,6 +1,6 @@
 //go:build unix
 
-package convert
+package rarutil
 
 import "syscall"
 

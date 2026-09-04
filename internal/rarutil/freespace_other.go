@@ -1,6 +1,6 @@
 //go:build !unix
 
-package convert
+package rarutil
 
 // availableBytes reports "unknown" (-1) on platforms without a portable statfs.
 // The caller treats unknown as "do not block" and relies on the extractor's own

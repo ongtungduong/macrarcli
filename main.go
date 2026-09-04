@@ -13,7 +13,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
 // version and commit are overridden at build time via -ldflags.
@@ -140,7 +140,7 @@ func run(args []string) int {
 		}
 	}
 
-	opts := convert.Options{
+	opts := rarutil.Options{
 		Password:      password,
 		Force:         force,
 		Store:         store,
@@ -171,7 +171,7 @@ func run(args []string) int {
 		}
 	}
 
-	results := convert.RunBatch(jobList, opts, jobs, nil)
+	results := rarutil.RunBatch(jobList, opts, jobs, nil)
 	if jsonOut {
 		return reportJSON(results, os.Stdout)
 	}
@@ -180,7 +180,7 @@ func run(args []string) int {
 
 // report prints per-job outcomes and a batch summary, returning the aggregate
 // exit code: 1 if any job failed, else 0.
-func report(results []convert.Result, quiet bool) int {
+func report(results []rarutil.Result, quiet bool) int {
 	failed, skipped := 0, 0
 	for _, r := range results {
 		switch {

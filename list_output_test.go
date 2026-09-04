@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
 func sampleArchive() listedArchive {
 	mtime := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
 	return listedArchive{
 		Src: "sample.rar",
-		Entries: []convert.EntryInfo{
+		Entries: []rarutil.EntryInfo{
 			{Name: "docs", IsDir: true, Modified: mtime},
 			{Name: "docs/readme.txt", Size: 128, Modified: mtime},
 			{Name: "streamed.bin", Size: -1},
@@ -48,7 +48,7 @@ func TestPrintList_StripsControlChars(t *testing.T) {
 	var buf bytes.Buffer
 	printList(&buf, []listedArchive{{
 		Src: "evil.rar",
-		Entries: []convert.EntryInfo{
+		Entries: []rarutil.EntryInfo{
 			{Name: "safe\x1b[2Khidden\rspoof.txt", Size: 1},
 			{Name: "日本語.txt", Size: 2},
 		},

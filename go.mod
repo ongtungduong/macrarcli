@@ -1,4 +1,4 @@
-module github.com/ongtungduong/rar2zip
+module github.com/ongtungduong/macrarcli
 
 go 1.26.2
 

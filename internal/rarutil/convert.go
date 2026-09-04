@@ -1,5 +1,5 @@
-// Package convert performs the core RAR-to-ZIP transformation.
-package convert
+// Package rarutil performs the core RAR-to-ZIP transformation.
+package rarutil
 
 import (
 	"archive/zip"

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
 // jsonResult is the machine-readable form of one conversion outcome.
@@ -26,7 +26,7 @@ type jsonSummary struct {
 
 // reportJSON writes a JSON summary of the batch to w and returns the aggregate
 // exit code: 1 if any job failed, else 0.
-func reportJSON(results []convert.Result, w io.Writer) int {
+func reportJSON(results []rarutil.Result, w io.Writer) int {
 	summary := jsonSummary{Results: make([]jsonResult, 0, len(results))}
 	for _, r := range results {
 		jr := jsonResult{Src: r.Src, Dst: r.Dst, OK: r.Err == nil}

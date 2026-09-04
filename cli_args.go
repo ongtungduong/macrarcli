@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
 // validateArgs returns a usage exit code (2) for malformed invocations, or 0.
@@ -50,8 +50,8 @@ func validateArgs(inputs []string, output, outDir string, jobs int, store bool, 
 // which two distinct inputs resolve to the same output. Without this guard a
 // concurrent batch would race to last-writer-wins, silently losing one input's
 // data — the same data-loss class as intra-archive name collisions.
-func buildJobs(inputs []string, output, outDir string) ([]convert.Job, error) {
-	jobs := make([]convert.Job, 0, len(inputs))
+func buildJobs(inputs []string, output, outDir string) ([]rarutil.Job, error) {
+	jobs := make([]rarutil.Job, 0, len(inputs))
 	seen := make(map[string]string, len(inputs)) // dst -> first src that claimed it
 	for _, src := range inputs {
 		dst := resolveDst(src, output, outDir)
@@ -59,7 +59,7 @@ func buildJobs(inputs []string, output, outDir string) ([]convert.Job, error) {
 			return nil, fmt.Errorf("inputs %q and %q both map to output %q; rename one or convert them separately", prev, src, dst)
 		}
 		seen[dst] = src
-		jobs = append(jobs, convert.Job{Src: src, Dst: dst})
+		jobs = append(jobs, rarutil.Job{Src: src, Dst: dst})
 	}
 	return jobs, nil
 }

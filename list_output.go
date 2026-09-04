@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
 // runList previews each input archive read-only (no ZIP is written) and reports
@@ -23,10 +23,10 @@ func runList(inputs []string, output, outDir, password string, maxEntries int, j
 		return 2
 	}
 
-	opts := convert.Options{Password: password, MaxEntries: maxEntries}
+	opts := rarutil.Options{Password: password, MaxEntries: maxEntries}
 	archives := make([]listedArchive, 0, len(inputs))
 	for _, src := range inputs {
-		entries, err := convert.List(src, opts)
+		entries, err := rarutil.List(src, opts)
 		archives = append(archives, listedArchive{Src: src, Entries: entries, Err: err})
 	}
 
@@ -50,7 +50,7 @@ func runList(inputs []string, output, outDir, password string, maxEntries int, j
 // listing continues past a single unreadable input.
 type listedArchive struct {
 	Src     string
-	Entries []convert.EntryInfo
+	Entries []rarutil.EntryInfo
 	Err     error
 }
 
@@ -99,7 +99,7 @@ func printList(w io.Writer, archives []listedArchive) {
 // into the operator's terminal (printable UTF-8, including CJK, is preserved),
 // and directories get a trailing slash so a preview reads like a file tree. The
 // --json path keeps the raw name — encoding/json escapes control characters.
-func listName(e convert.EntryInfo) string {
+func listName(e rarutil.EntryInfo) string {
 	name := displaySafe(e.Name)
 	if e.IsDir {
 		return name + "/"
@@ -119,7 +119,7 @@ func displaySafe(s string) string {
 
 // listSize renders a directory or unknown-size entry as "-" and any other entry
 // as its byte count.
-func listSize(e convert.EntryInfo) string {
+func listSize(e rarutil.EntryInfo) string {
 	if e.IsDir || e.Size < 0 {
 		return "-"
 	}

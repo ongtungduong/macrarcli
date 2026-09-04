@@ -6,15 +6,15 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
 // TestReportJSON_Shape verifies the JSON summary structure, per-result fields,
 // and the exit code returned for a mixed success/failure batch.
 func TestReportJSON_Shape(t *testing.T) {
-	results := []convert.Result{
-		{Job: convert.Job{Src: "a.rar", Dst: "a.zip"}, Err: nil},
-		{Job: convert.Job{Src: "b.rar", Dst: "b.zip"}, Err: errors.New("boom")},
+	results := []rarutil.Result{
+		{Job: rarutil.Job{Src: "a.rar", Dst: "a.zip"}, Err: nil},
+		{Job: rarutil.Job{Src: "b.rar", Dst: "b.zip"}, Err: errors.New("boom")},
 	}
 
 	var buf bytes.Buffer
@@ -54,8 +54,8 @@ func TestReportJSON_Shape(t *testing.T) {
 
 // TestReportJSON_AllSuccess returns exit code 0 when nothing failed.
 func TestReportJSON_AllSuccess(t *testing.T) {
-	results := []convert.Result{
-		{Job: convert.Job{Src: "a.rar", Dst: "a.zip"}, Err: nil},
+	results := []rarutil.Result{
+		{Job: rarutil.Job{Src: "a.rar", Dst: "a.zip"}, Err: nil},
 	}
 	var buf bytes.Buffer
 	if code := reportJSON(results, &buf); code != 0 {
