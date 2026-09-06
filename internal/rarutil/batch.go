@@ -1,32 +1,32 @@
 package rarutil
 
-import (
-	"errors"
-	"sync"
-)
+import "sync"
 
-// Job is a single source-RAR → destination-ZIP conversion.
+// Job is a single source-RAR -> destination-directory extraction. Dst names a
+// directory (Extract's target), not a file — multiple jobs MAY target the
+// same Dst; commitStaged's package-level lock serializes their commit steps
+// so concurrent jobs never race on the same destination path.
 type Job struct {
 	Src string
 	Dst string
 }
 
-// Result reports the outcome of one Job. Err is nil on success. Skipped is true
-// when the job was intentionally not run (output already existed under
-// --skip-existing); a skipped result has a nil Err and is not a failure.
+// Result reports the outcome of one Job. Err is nil on success.
+// SkippedEntries lists archive-relative paths that were individually skipped
+// under the OverwriteSkip policy — a job with only skips and no Err is still
+// a success, just a partial one.
 type Result struct {
 	Job
-	Err     error
-	Skipped bool
+	Err            error
+	SkippedEntries []string
 }
 
-// RunBatch converts every job, continuing past failures so one bad archive
-// never aborts the batch. Results are returned in the same order as jobs.
-// At most maxParallel conversions run concurrently (values < 1 mean sequential);
-// each job writes a distinct output file, so workers share no writer. opts
-// (e.g. Password, Force) apply to every job. onStart, if non-nil, is called as
-// each job begins — it may run from multiple goroutines, so it must be safe for
-// concurrent use.
+// RunBatch extracts every job, continuing past failures so one bad archive
+// never aborts the batch. Results are returned in the same order as jobs. At
+// most maxParallel extractions run concurrently (values < 1 mean sequential).
+// opts (e.g. Password, OverwritePolicy) apply to every job. onStart, if
+// non-nil, is called as each job begins — it may run from multiple
+// goroutines, so it must be safe for concurrent use.
 func RunBatch(jobs []Job, opts Options, maxParallel int, onStart func(Job)) []Result {
 	if maxParallel < 1 {
 		maxParallel = 1
@@ -45,12 +45,8 @@ func RunBatch(jobs []Job, opts Options, maxParallel int, onStart func(Job)) []Re
 				onStart(j)
 			}
 			// Distinct index per goroutine — no shared-slot write race.
-			err := Convert(j.Src, j.Dst, opts)
-			if errors.Is(err, ErrSkipped) {
-				results[i] = Result{Job: j, Skipped: true}
-			} else {
-				results[i] = Result{Job: j, Err: err}
-			}
+			skipped, err := Extract(j.Src, j.Dst, opts)
+			results[i] = Result{Job: j, Err: err, SkippedEntries: skipped}
 		}(i, j)
 	}
 
