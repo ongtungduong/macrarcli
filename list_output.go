@@ -13,16 +13,12 @@ import (
 	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
-// runList previews each input archive read-only (no ZIP is written) and reports
-// the result as a human table or, with --json, a structured document. -o and
-// --out-dir are rejected because --list writes no output. The entry-count cap
-// bounds each listing. Returns the process exit code: 1 if any archive failed.
-func runList(inputs []string, output, outDir, password string, maxEntries int, jsonOut bool) int {
-	if output != "" || outDir != "" {
-		fmt.Fprintln(os.Stderr, "rar2zip: --list previews contents and writes no output; remove -o/--out-dir")
-		return 2
-	}
-
+// runList previews each input archive read-only (no output is written) and
+// reports the result as a human table or, with --json, a structured
+// document. -o/--dest and the overwrite-policy flags are rejected upstream in
+// validateArgs since --list writes nothing. The entry-count cap bounds each
+// listing. Returns the aggregate exit code per the 5-code scheme.
+func runList(inputs []string, password string, maxEntries int, jsonOut bool) int {
 	opts := rarutil.Options{Password: password, MaxEntries: maxEntries}
 	archives := make([]listedArchive, 0, len(inputs))
 	for _, src := range inputs {
@@ -39,10 +35,18 @@ func runList(inputs []string, output, outDir, password string, maxEntries int, j
 			fmt.Fprintf(os.Stderr, "rar2zip: %s: %v\n", a.Src, a.Err)
 		}
 	}
-	if anyListErr(archives) {
-		return 1
+	return aggregateExit(listExitCodes(archives))
+}
+
+// listExitCodes maps each archive's List error to its exit code, reusing the
+// same classification extract/test use (e.g. a wrong password on a RAR5-
+// encrypted archive still reports exit 2 here).
+func listExitCodes(archives []listedArchive) []int {
+	codes := make([]int, len(archives))
+	for i, a := range archives {
+		codes[i] = classifyErr(a.Err)
 	}
-	return 0
+	return codes
 }
 
 // listedArchive is one archive's --list outcome: its entries, or the error that
@@ -52,16 +56,6 @@ type listedArchive struct {
 	Src     string
 	Entries []rarutil.EntryInfo
 	Err     error
-}
-
-// anyListErr reports whether any archive failed to list (drives the exit code).
-func anyListErr(archives []listedArchive) bool {
-	for _, a := range archives {
-		if a.Err != nil {
-			return true
-		}
-	}
-	return false
 }
 
 // printList writes a human-readable preview of each archive's contents to w.
@@ -86,9 +80,9 @@ func printList(w io.Writer, archives []listedArchive) {
 		printed = true
 
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "SIZE\tMODIFIED\tNAME")
+		fmt.Fprintln(tw, "SIZE\tPACKED\tENC\tMODIFIED\tNAME")
 		for _, e := range a.Entries {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", listSize(e), listTime(e.Modified), listName(e))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", listSize(e), listPackedSize(e), listEncrypted(e), listTime(e.Modified), listName(e))
 		}
 		tw.Flush()
 	}
@@ -126,6 +120,24 @@ func listSize(e rarutil.EntryInfo) string {
 	return fmt.Sprintf("%d", e.Size)
 }
 
+// listPackedSize renders a directory entry's packed size as "-" (a directory
+// carries no compressed payload) and any other entry as its byte count.
+func listPackedSize(e rarutil.EntryInfo) string {
+	if e.IsDir {
+		return "-"
+	}
+	return fmt.Sprintf("%d", e.PackedSize)
+}
+
+// listEncrypted renders "yes"/"-" so the column stays legible in a
+// tab-aligned table (an empty string would misalign the tabwriter).
+func listEncrypted(e rarutil.EntryInfo) string {
+	if e.Encrypted {
+		return "yes"
+	}
+	return "-"
+}
+
 // listTime renders a zero modtime as "-" rather than the Go zero date.
 func listTime(t time.Time) string {
 	if t.IsZero() {
@@ -137,10 +149,12 @@ func listTime(t time.Time) string {
 // listEntryJSON is one entry in the --list --json document. modified is omitted
 // when the archive recorded none; size stays -1 for unknown-size entries.
 type listEntryJSON struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Modified string `json:"modified,omitempty"`
-	IsDir    bool   `json:"isDir"`
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	PackedSize int64  `json:"packedSize"`
+	Encrypted  bool   `json:"encrypted,omitempty"`
+	Modified   string `json:"modified,omitempty"`
+	IsDir      bool   `json:"isDir"`
 }
 
 // listArchiveJSON is one archive's entry in the --list --json document.
@@ -153,13 +167,14 @@ type listArchiveJSON struct {
 
 // listSummaryJSON is the top-level --list --json document.
 type listSummaryJSON struct {
+	Mode     string            `json:"mode"`
 	Archives []listArchiveJSON `json:"archives"`
 }
 
 // reportListJSON writes a JSON listing of every archive to w and returns the
-// aggregate exit code: 1 if any archive failed to list, else 0.
+// aggregate exit code per the 5-code scheme (classifyErr/aggregateExit).
 func reportListJSON(w io.Writer, archives []listedArchive) int {
-	doc := listSummaryJSON{Archives: make([]listArchiveJSON, 0, len(archives))}
+	doc := listSummaryJSON{Mode: "list", Archives: make([]listArchiveJSON, 0, len(archives))}
 	for _, a := range archives {
 		aj := listArchiveJSON{
 			Src:     a.Src,
@@ -170,7 +185,7 @@ func reportListJSON(w io.Writer, archives []listedArchive) int {
 			aj.Error = a.Err.Error()
 		}
 		for _, e := range a.Entries {
-			ej := listEntryJSON{Name: e.Name, Size: e.Size, IsDir: e.IsDir}
+			ej := listEntryJSON{Name: e.Name, Size: e.Size, PackedSize: e.PackedSize, Encrypted: e.Encrypted, IsDir: e.IsDir}
 			if !e.Modified.IsZero() {
 				ej.Modified = e.Modified.UTC().Format(time.RFC3339)
 			}
@@ -182,10 +197,7 @@ func reportListJSON(w io.Writer, archives []listedArchive) int {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(doc); err != nil {
-		return 1
+		return 4
 	}
-	if anyListErr(archives) {
-		return 1
-	}
-	return 0
+	return aggregateExit(listExitCodes(archives))
 }

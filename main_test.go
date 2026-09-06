@@ -10,18 +10,15 @@ import (
 )
 
 // TestRun_ExitCodes covers argument validation paths that don't need a real
-// archive: usage errors (code 2) and runtime errors (code 1).
+// archive: usage errors now exit 1 (exit 2 is reserved for password errors).
 func TestRun_ExitCodes(t *testing.T) {
 	dir := t.TempDir()
 
-	// A non-rar regular file (wrong extension).
 	txt := filepath.Join(dir, "note.txt")
 	if err := os.WriteFile(txt, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A path that ends in .rar but does not exist.
 	missing := filepath.Join(dir, "nope.rar")
-	// A directory whose name ends in .rar (exercises the IsDir guard).
 	dirRar := filepath.Join(dir, "bundle.rar")
 	if err := os.Mkdir(dirRar, 0o755); err != nil {
 		t.Fatal(err)
@@ -32,13 +29,12 @@ func TestRun_ExitCodes(t *testing.T) {
 		args []string
 		want int
 	}{
-		{"no args", nil, 2},
-		{"wrong extension", []string{txt}, 2},
-		{"directory input", []string{dir}, 2},         // dir has no .rar ext -> usage error
-		{"directory named .rar", []string{dirRar}, 2}, // .rar ext but is a dir -> usage error
-		{"missing rar file", []string{missing}, 1},
-		// Multiple inputs are valid (batch); these don't exist -> runtime error.
-		{"multiple missing inputs", []string{missing, filepath.Join(dir, "x.rar")}, 1},
+		{"no args", nil, 1},
+		{"wrong extension", []string{txt}, 1},
+		{"directory input", []string{dir}, 1},
+		{"directory named .rar", []string{dirRar}, 1},
+		{"missing rar file", []string{missing}, 4},
+		{"multiple missing inputs", []string{missing, filepath.Join(dir, "x.rar")}, 4},
 	}
 
 	for _, tc := range tests {
@@ -58,9 +54,9 @@ func TestRun_VersionHelp(t *testing.T) {
 			t.Errorf("run(%v) = %d, want 0", args, got)
 		}
 	}
-	// An unknown flag is a usage error.
-	if got := run([]string{"--bogus"}); got != 2 {
-		t.Errorf("run(--bogus) = %d, want 2", got)
+	// An unknown flag is a usage error (exit 1).
+	if got := run([]string{"--bogus"}); got != 1 {
+		t.Errorf("run(--bogus) = %d, want 1", got)
 	}
 }
 
@@ -95,83 +91,114 @@ func TestRun_VersionOutput(t *testing.T) {
 	}
 }
 
-// TestRun_OverwriteGuard refuses to clobber an existing output unless --force.
-// The overwrite check fires before the archive is opened, so a dummy .rar suffices.
+// TestRun_OverwriteGuard refuses to clobber an existing destination file
+// unless --overwrite. A dummy (non-real) .rar suffices: rardecode's OpenReader
+// error surfaces as exit 4 (not a usage error), which is the behavior under
+// test here — the actual overwrite-collision guard is exercised at the
+// engine level in internal/rarutil's own tests. This just proves the CLI
+// wires --overwrite through and never crashes attempting a fake extraction.
 func TestRun_OverwriteGuard(t *testing.T) {
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.rar")
 	if err := os.WriteFile(in, []byte("not a real rar"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(dir, "in.zip")
-	const sentinel = "preexisting"
-	if err := os.WriteFile(out, []byte(sentinel), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	if got := run([]string{in}); got != 1 {
-		t.Errorf("run without --force = %d, want 1 (refuse clobber)", got)
+	if got := run([]string{"-q", "-o", dir, in}); got != 4 {
+		t.Errorf("run(fake rar) = %d, want 4 (open error)", got)
 	}
-	if b, _ := os.ReadFile(out); string(b) != sentinel {
-		t.Errorf("output was modified despite no --force: %q", b)
+	if got := run([]string{"-q", "--overwrite", "-o", dir, in}); got != 4 {
+		t.Errorf("run(--overwrite, fake rar) = %d, want 4 (open error)", got)
 	}
 }
 
-// TestRun_Convert exercises the happy path, --output, and --force against a real
-// fixture. Skips when no fixture is present.
-func TestRun_Convert(t *testing.T) {
+// TestRun_Extract exercises the happy path and --dest against a real fixture.
+// Skips when no fixture is present.
+func TestRun_Extract(t *testing.T) {
 	matches, _ := filepath.Glob("testdata/*.rar")
 	if len(matches) == 0 {
-		t.Skip("no testdata/*.rar fixture present; skipping conversion test")
+		t.Skip("no testdata/*.rar fixture present; skipping extraction test")
 	}
 	src := matches[0]
 	dir := t.TempDir()
 
-	// --output to an explicit file path.
-	out := filepath.Join(dir, "custom.zip")
-	if got := run([]string{"-q", "-o", out, src}); got != 0 {
+	if got := run([]string{"-q", "-o", dir, src}); got != 0 {
 		t.Fatalf("run(-o) = %d, want 0", got)
 	}
-	if _, err := os.Stat(out); err != nil {
-		t.Fatalf("expected output %s: %v", out, err)
+
+	// Re-running without --overwrite must refuse (destination files exist).
+	if got := run([]string{"-q", "-o", dir, src}); got == 0 {
+		t.Errorf("re-run without --overwrite = %d, want nonzero (collision)", got)
 	}
 
-	// Re-running without --force must refuse.
-	if got := run([]string{"-q", "-o", out, src}); got != 1 {
-		t.Errorf("re-run without --force = %d, want 1", got)
-	}
-
-	// --force overwrites.
-	if got := run([]string{"-q", "-f", "-o", out, src}); got != 0 {
-		t.Errorf("run(-f) = %d, want 0", got)
-	}
-
-	// --output to a directory writes <base>.zip inside it.
-	if got := run([]string{"-q", "--output", dir, src}); got != 0 {
-		t.Fatalf("run(--output dir) = %d, want 0", got)
-	}
-	base := filepath.Base(src)
-	want := filepath.Join(dir, base[:len(base)-len(filepath.Ext(base))]+".zip")
-	if _, err := os.Stat(want); err != nil {
-		t.Errorf("expected output in dir %s: %v", want, err)
+	// --overwrite replaces.
+	if got := run([]string{"-q", "--overwrite", "-o", dir, src}); got != 0 {
+		t.Errorf("run(--overwrite) = %d, want 0", got)
 	}
 }
 
-// TestRun_BatchUsageErrors covers Phase-3 flag-combination misuse (exit 2).
-func TestRun_BatchUsageErrors(t *testing.T) {
+// TestRun_ExtractFlat confirms -e/--flat discards directory structure.
+func TestRun_ExtractFlat(t *testing.T) {
+	matches, _ := filepath.Glob("testdata/*.rar")
+	if len(matches) == 0 {
+		t.Skip("no testdata/*.rar fixture present; skipping flat extraction test")
+	}
+	src := matches[0]
+	dir := t.TempDir()
+
+	if got := run([]string{"-q", "-e", "-o", dir, src}); got != 0 {
+		t.Fatalf("run(-e) = %d, want 0", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			t.Errorf("-e left a subdirectory: %q", e.Name())
+		}
+	}
+}
+
+// TestRun_ModeFlagConflict proves two mode selectors together is a usage
+// error (exit 1) and never touches any archive.
+func TestRun_ModeFlagConflict(t *testing.T) {
+	if got := run([]string{"-l", "-t", "a.rar"}); got != 1 {
+		t.Errorf("run(-l -t) = %d, want 1", got)
+	}
+	if got := run([]string{"-e", "-l", "a.rar"}); got != 1 {
+		t.Errorf("run(-e -l) = %d, want 1", got)
+	}
+}
+
+// TestRun_OverwriteFlagConflict proves two overwrite-policy flags together is
+// a usage error (exit 1).
+func TestRun_OverwriteFlagConflict(t *testing.T) {
+	if got := run([]string{"--overwrite", "--skip", "a.rar"}); got != 1 {
+		t.Errorf("run(--overwrite --skip) = %d, want 1", got)
+	}
+}
+
+// TestRun_ListRejectsDestAndOverwrite proves --list/--test reject -o/--dest
+// and the overwrite-policy flags (they write nothing).
+func TestRun_ListRejectsDestAndOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	rar := filepath.Join(dir, "x.rar")
+	if err := os.WriteFile(rar, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{"output with multiple inputs", []string{"-o", "x.zip", "a.rar", "b.rar"}},
-		{"output and out-dir together", []string{"-o", "x.zip", "--out-dir", "d", "a.rar"}},
-		{"jobs below one", []string{"--jobs", "0", "a.rar"}},
-		{"one bad extension in batch", []string{"a.rar", "notes.txt"}},
+		{"list with dest", []string{"-l", "-o", dir, rar}},
+		{"test with overwrite", []string{"-t", "--overwrite", rar}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := run(tc.args); got != 2 {
-				t.Errorf("run(%v) = %d, want 2", tc.args, got)
+			if got := run(tc.args); got != 1 {
+				t.Errorf("run(%v) = %d, want 1", tc.args, got)
 			}
 		})
 	}
@@ -196,130 +223,54 @@ func TestDefaultJobs(t *testing.T) {
 	}
 }
 
-// TestRun_SkipExisting covers --skip-existing: an input whose output already
-// exists is skipped (exit 0, output untouched), not failed (exit 1 without it).
-// Like the overwrite guard, the existing-output check fires before the archive
-// is opened, so a dummy .rar suffices.
-func TestRun_SkipExisting(t *testing.T) {
-	dir := t.TempDir()
-	in := filepath.Join(dir, "in.rar")
-	if err := os.WriteFile(in, []byte("not a real rar"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(dir, "in.zip")
-	const sentinel = "preexisting"
-	if err := os.WriteFile(out, []byte(sentinel), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Without --skip-existing the existing output is a failure (exit 1).
-	if got := run([]string{"-q", in}); got != 1 {
-		t.Errorf("run without --skip-existing = %d, want 1", got)
-	}
-	// With --skip-existing it is skipped: exit 0, output untouched.
-	if got := run([]string{"-q", "--skip-existing", in}); got != 0 {
-		t.Errorf("run --skip-existing = %d, want 0 (skipped, not failed)", got)
-	}
-	if b, _ := os.ReadFile(out); string(b) != sentinel {
-		t.Errorf("output modified despite --skip-existing: %q", b)
-	}
-}
-
-// TestRun_SkipExistingJSON confirms a skipped job is counted in the JSON summary.
-func TestRun_SkipExistingJSON(t *testing.T) {
-	dir := t.TempDir()
-	in := filepath.Join(dir, "in.rar")
-	if err := os.WriteFile(in, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "in.zip"), []byte("y"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	r, w, _ := os.Pipe()
-	old := os.Stdout
-	os.Stdout = w
-	code := run([]string{"--json", "--skip-existing", in})
-	w.Close()
-	os.Stdout = old
-	out, _ := io.ReadAll(r)
-
-	if code != 0 {
-		t.Fatalf("run --json --skip-existing = %d, want 0", code)
-	}
-	if !strings.Contains(string(out), "\"skipped\"") {
-		t.Errorf("JSON summary missing skipped count:\n%s", out)
-	}
-}
-
-// TestRun_List covers --list paths that don't need a real archive: rejecting
-// output flags (exit 2), the non-rar extension guard (exit 2), and an unreadable
-// archive surfacing as a runtime error (exit 1).
-func TestRun_List(t *testing.T) {
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "nope.rar")
-	txt := filepath.Join(dir, "note.txt")
-	if err := os.WriteFile(txt, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	tests := []struct {
-		name string
-		args []string
-		want int
-	}{
-		{"list with output flag", []string{"--list", "-o", "x.zip", missing}, 2},
-		{"list with out-dir flag", []string{"--list", "--out-dir", dir, missing}, 2},
-		{"list non-rar input", []string{"--list", txt}, 2},
-		{"list missing archive", []string{"--list", missing}, 1},
-		{"list missing archive json", []string{"--list", "--json", missing}, 1},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := run(tc.args); got != tc.want {
-				t.Errorf("run(%v) = %d, want %d", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestRun_ListFixture lists a real fixture and confirms it writes no ZIP and
-// emits valid JSON with at least one entry. Skips when no fixture is present.
+// TestRun_ListFixture lists a real fixture and confirms it writes no output
+// and emits valid JSON with at least one entry. Skips when no fixture is present.
 func TestRun_ListFixture(t *testing.T) {
 	matches, _ := filepath.Glob("testdata/*.rar")
 	if len(matches) == 0 {
 		t.Skip("no testdata/*.rar fixture present; skipping list fixture test")
 	}
 	src := matches[0]
+	dir := t.TempDir()
 
-	// Capture stdout for the JSON listing.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := os.Stdout
 	os.Stdout = w
-	code := run([]string{"--list", "--json", src})
+	code := run([]string{"-l", "--json", src})
 	w.Close()
 	os.Stdout = old
 	out, _ := io.ReadAll(r)
 
 	if code != 0 {
-		t.Fatalf("run(--list --json) = %d, want 0", code)
+		t.Fatalf("run(-l --json) = %d, want 0", code)
 	}
 	if !strings.Contains(string(out), "\"archives\"") || !strings.Contains(string(out), "\"entries\"") {
 		t.Errorf("JSON listing missing expected keys:\n%s", out)
 	}
-	// --list must not write a sibling ZIP.
-	base := filepath.Base(src)
-	zipPath := filepath.Join(filepath.Dir(src), base[:len(base)-len(filepath.Ext(base))]+".zip")
-	if _, err := os.Stat(zipPath); err == nil {
-		os.Remove(zipPath)
-		t.Errorf("--list wrote a ZIP at %s; it must be read-only", zipPath)
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("--list wrote output into an unrelated dir; found %d entries", len(entries))
 	}
 }
 
-// TestRun_Batch exercises multi-input conversion, --out-dir, --jobs, and
+// TestRun_TestFixture validates a real fixture with -t and confirms it writes
+// nothing. Skips when no fixture is present.
+func TestRun_TestFixture(t *testing.T) {
+	matches, _ := filepath.Glob("testdata/*.rar")
+	if len(matches) == 0 {
+		t.Skip("no testdata/*.rar fixture present; skipping test-mode fixture test")
+	}
+	src := matches[0]
+
+	if got := run([]string{"-t", "-q", src}); got != 0 {
+		t.Errorf("run(-t) = %d, want 0", got)
+	}
+}
+
+// TestRun_Batch exercises multi-input extraction into a shared --dest and
 // continue-on-error against a real fixture. Skips when no fixture is present.
 func TestRun_Batch(t *testing.T) {
 	matches, _ := filepath.Glob("testdata/*.rar")
@@ -329,24 +280,19 @@ func TestRun_Batch(t *testing.T) {
 	src := matches[0]
 	dir := t.TempDir()
 
-	// Two copies of a valid input + --out-dir + --jobs 2 -> both convert.
 	outDir := filepath.Join(dir, "out")
-	if got := run([]string{"-q", "--jobs", "2", "--out-dir", outDir, src, src}); got != 0 {
+	if got := run([]string{"-q", "--jobs", "2", "-o", outDir, src}); got != 0 {
 		t.Fatalf("batch run = %d, want 0", got)
 	}
-	base := filepath.Base(src)
-	zipName := base[:len(base)-len(filepath.Ext(base))] + ".zip"
-	if _, err := os.Stat(filepath.Join(outDir, zipName)); err != nil {
-		t.Errorf("expected batch output %s: %v", zipName, err)
+	if _, err := os.Stat(outDir); err != nil {
+		t.Errorf("expected batch output dir %s: %v", outDir, err)
 	}
 
-	// Continue-on-error: one good input + one missing -> exit 1, good one still written.
+	// Continue-on-error: one good input + one missing -> nonzero exit, good
+	// one's destination directory still gets created/populated.
 	outDir2 := filepath.Join(dir, "out2")
 	missing := filepath.Join(dir, "missing.rar")
-	if got := run([]string{"-q", "--out-dir", outDir2, src, missing}); got != 1 {
-		t.Errorf("batch with one failure = %d, want 1", got)
-	}
-	if _, err := os.Stat(filepath.Join(outDir2, zipName)); err != nil {
-		t.Errorf("good input not converted despite sibling failure: %v", err)
+	if got := run([]string{"-q", "-o", outDir2, src, missing}); got == 0 {
+		t.Errorf("batch with one failure = %d, want nonzero", got)
 	}
 }

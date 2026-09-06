@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,6 +34,12 @@ type Options struct {
 	// MaxEntries caps the number of archive entries; 0 (the default) means
 	// unlimited.
 	MaxEntries int
+	// Flat, when true, discards the archive's directory structure: every file
+	// is written directly under destDir by its base name, and no directory
+	// entries are staged. Name collisions across different source directories
+	// are resolved by fsEmitter's existing dedup-variant logic, the same as
+	// any other post-sanitize name collision.
+	Flat bool
 }
 
 func (o Options) limits() limits {
@@ -105,16 +112,31 @@ func extractToStaging(srcRar, stagingDir string, opts Options) error {
 			return fmt.Errorf("unsafe rar entry %q: %w", hdr.Name, err)
 		}
 
-		mode := safeMode(hdr.Mode(), hdr.IsDir)
 		if hdr.IsDir {
+			// A flat extraction discards structure entirely, so an empty
+			// directory entry has nowhere meaningful to land.
+			if opts.Flat {
+				continue
+			}
 			if err := em.emitDir(hdr.Name, strings.TrimRight(name, "/")); err != nil {
 				return err
 			}
 			continue
 		}
+		if opts.Flat {
+			name = flattenName(name)
+		}
+		mode := safeMode(hdr.Mode(), hdr.IsDir)
 		if err := em.emitFile(hdr.Name, name, mode, hdr.ModificationTime, rr); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// flattenName reduces a sanitized, '/'-separated entry name to its base
+// component for Options.Flat extraction. name is already sanitize()d, so no
+// further traversal check is needed here.
+func flattenName(name string) string {
+	return path.Base(name)
 }

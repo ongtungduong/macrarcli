@@ -154,6 +154,54 @@ func TestExtract_OnEntry(t *testing.T) {
 	}
 }
 
+// TestFlattenName is fixture-free (unlike the Options.Flat fidelity coverage
+// below, which needs a real archive) since flattenName is pure.
+func TestFlattenName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"file.txt", "file.txt"},
+		{"dir/file.txt", "file.txt"},
+		{"a/b/c/deep.txt", "deep.txt"},
+	}
+	for _, tt := range tests {
+		if got := flattenName(tt.in); got != tt.want {
+			t.Errorf("flattenName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestExtract_FlatDiscardsStructure asserts Options.Flat writes every file
+// directly under destDir (no subdirectories) and stages no directory entries,
+// even when the fixture contains nested paths.
+func TestExtract_FlatDiscardsStructure(t *testing.T) {
+	matches, err := filepath.Glob("../../testdata/*.rar")
+	if err != nil {
+		t.Fatalf("glob fixtures: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Skip("no testdata/*.rar fixture present; skipping flat-extraction test")
+	}
+	src := matches[0]
+
+	destDir := t.TempDir()
+	if _, err := Extract(src, destDir, Options{Flat: true}); err != nil {
+		t.Fatalf("Extract(Flat): %v", err)
+	}
+
+	wantFiles, _ := digestRar(t, src)
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			t.Errorf("flat extraction left a subdirectory: %q", e.Name())
+		}
+	}
+	if len(entries) != len(wantFiles) {
+		t.Errorf("flat extraction wrote %d entries, want %d files (one per archive file, no dirs)", len(entries), len(wantFiles))
+	}
+}
+
 // digestRar returns sha256 hex per file entry and the set of directory names.
 func digestRar(t *testing.T, path string) (files map[string]string, dirs map[string]bool) {
 	t.Helper()

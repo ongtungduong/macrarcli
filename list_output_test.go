@@ -111,8 +111,8 @@ func TestReportListJSON_Shape(t *testing.T) {
 func TestReportListJSON_ErrorExitsNonZero(t *testing.T) {
 	var buf bytes.Buffer
 	archives := []listedArchive{{Src: "broken.rar", Err: errors.New("open rar: bad magic")}}
-	if code := reportListJSON(&buf, archives); code != 1 {
-		t.Errorf("exit code = %d, want 1 when an archive failed", code)
+	if code := reportListJSON(&buf, archives); code != 4 {
+		t.Errorf("exit code = %d, want 4 (uncategorized runtime error)", code)
 	}
 	if !strings.Contains(buf.String(), "bad magic") {
 		t.Errorf("JSON did not surface the per-archive error:\n%s", buf.String())
