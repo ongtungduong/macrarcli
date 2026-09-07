@@ -1,4 +1,4 @@
-package convert
+package rarutil
 
 import (
 	"fmt"
@@ -12,10 +12,12 @@ import (
 // use '/' separators exactly as the archive reports them; this is a preview of
 // the archive's own contents, not the sanitized ZIP names a conversion produces.
 type EntryInfo struct {
-	Name     string    // entry name, '/'-separated
-	Size     int64     // unpacked size in bytes; -1 when the archive omits it
-	Modified time.Time // zero when the archive recorded no modification time
-	IsDir    bool
+	Name       string    // entry name, '/'-separated
+	Size       int64     // unpacked size in bytes; -1 when the archive omits it
+	PackedSize int64     // compressed size on disk, as recorded in the archive
+	Encrypted  bool      // this entry's contents are password-protected
+	Modified   time.Time // zero when the archive recorded no modification time
+	IsDir      bool
 }
 
 // headerReader is the minimal slice of *rardecode.ReadCloser the lister needs:
@@ -51,10 +53,12 @@ func listEntries(rr headerReader, maxEntries int) ([]EntryInfo, error) {
 			size = -1 // a streamed entry has no size until extracted; don't fabricate one
 		}
 		entries = append(entries, EntryInfo{
-			Name:     hdr.Name,
-			Size:     size,
-			Modified: hdr.ModificationTime,
-			IsDir:    hdr.IsDir,
+			Name:       hdr.Name,
+			Size:       size,
+			PackedSize: hdr.PackedSize,
+			Encrypted:  hdr.Encrypted,
+			Modified:   hdr.ModificationTime,
+			IsDir:      hdr.IsDir,
 		})
 	}
 	return entries, nil

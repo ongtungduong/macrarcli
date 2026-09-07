@@ -1,4 +1,4 @@
-package convert
+package rarutil
 
 import (
 	"errors"
@@ -35,7 +35,7 @@ func TestListEntries_MapsFields(t *testing.T) {
 	mtime := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
 	rr := &fakeHeaders{hdrs: []*rardecode.FileHeader{
 		{Name: "dir", IsDir: true, ModificationTime: mtime},
-		{Name: "dir/file.txt", UnPackedSize: 42, ModificationTime: mtime},
+		{Name: "dir/file.txt", UnPackedSize: 42, PackedSize: 20, Encrypted: true, ModificationTime: mtime},
 		{Name: "streamed.bin", UnPackedSize: 99, UnKnownSize: true},
 	}}
 
@@ -52,6 +52,12 @@ func TestListEntries_MapsFields(t *testing.T) {
 	}
 	if got[1].Name != "dir/file.txt" || got[1].Size != 42 || !got[1].Modified.Equal(mtime) {
 		t.Errorf("file entry = %+v", got[1])
+	}
+	if got[1].PackedSize != 20 || !got[1].Encrypted {
+		t.Errorf("file entry PackedSize/Encrypted = %d/%v, want 20/true", got[1].PackedSize, got[1].Encrypted)
+	}
+	if got[0].Encrypted || got[0].PackedSize != 0 {
+		t.Errorf("dir entry should default PackedSize/Encrypted to zero values, got %+v", got[0])
 	}
 	// An unknown-size entry maps to -1 rather than a misleading concrete number.
 	if got[2].Size != -1 {

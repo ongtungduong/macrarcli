@@ -1,13 +1,13 @@
-# bash completion for rar2zip
+# bash completion for macrarcli
 # Install: source this file, or copy to /etc/bash_completion.d/ (or
 # $(brew --prefix)/etc/bash_completion.d/ on Homebrew).
 
-_rar2zip() {
+_macrarcli() {
     local cur flags
     cur="${COMP_WORDS[COMP_CWORD]}"
-    flags="-o --output --out-dir -f --force -q --quiet --password \
---jobs --store --level --verify --json --allow-fallback \
---max-size --max-entries --list --skip-existing --verbose \
+    flags="-o --dest -e --flat -l --list -t --test \
+--overwrite --skip --rename -q --quiet --password \
+--jobs --json --max-size --max-entries --verbose \
 --version -h --help"
 
     if [[ "$cur" == -* ]]; then
@@ -17,4 +17,4 @@ _rar2zip() {
     # Otherwise complete .rar files and directories.
     COMPREPLY=( $(compgen -f -X '!*.rar' -- "$cur") $(compgen -d -- "$cur") )
 }
-complete -F _rar2zip rar2zip
+complete -F _macrarcli macrarcli

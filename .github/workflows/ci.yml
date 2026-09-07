@@ -30,10 +30,11 @@ jobs:
           - os: darwin
             runner: macos-latest
             goarch: arm64
-          # Windows is experimental and build-only: the fallback tests shell out
-          # to unrar/7z and create symlinks, which are Unix-only. vet/fmt/build
-          # still run (they compile the windows build variant), so a broken
-          # Windows build is caught — but the test suite is not run here.
+          # Windows is experimental and build-only: several internal/rarutil
+          # tests create symlinks (os.Symlink needs elevated privileges on
+          # Windows), which is Unix-only. vet/fmt/build still run (they
+          # compile the windows build variant), so a broken Windows build is
+          # caught — but the test suite is not run here.
           - os: windows
             runner: windows-latest
             goarch: amd64

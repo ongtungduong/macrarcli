@@ -7,33 +7,82 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ongtungduong/rar2zip/internal/convert"
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
-// validateArgs returns a usage exit code (2) for malformed invocations, or 0.
-func validateArgs(inputs []string, output, outDir string, jobs int, store bool, level int) int {
+// cliMode selects what each input archive is used for.
+type cliMode int
+
+const (
+	modeExtract cliMode = iota // default: preserve directory structure
+	modeFlat                   // -e/--flat: extract, discarding structure
+	modeList                   // -l/--list: read-only preview
+	modeTest                   // -t/--test: checksum-only validation, no writes
+)
+
+// resolveMode enforces the -e/-l/-t mutual exclusion (they select different,
+// incompatible things to do with an archive) and returns the selected mode,
+// defaulting to modeExtract when none is given.
+func resolveMode(flat, list, test bool) (cliMode, error) {
+	n := 0
+	m := modeExtract
+	if flat {
+		n++
+		m = modeFlat
+	}
+	if list {
+		n++
+		m = modeList
+	}
+	if test {
+		n++
+		m = modeTest
+	}
+	if n > 1 {
+		return 0, fmt.Errorf("-e/--flat, -l/--list, -t/--test are mutually exclusive")
+	}
+	return m, nil
+}
+
+// resolveOverwritePolicy enforces the --overwrite/--skip/--rename mutual
+// exclusion and reports whether any of the three was explicitly given (the
+// zero policy, OverwriteFail, is otherwise indistinguishable from "not set").
+func resolveOverwritePolicy(overwrite, skip, rename bool) (policy rarutil.OverwritePolicy, explicitlySet bool, err error) {
+	n := 0
+	if overwrite {
+		n++
+		policy = rarutil.OverwriteOverwrite
+	}
+	if skip {
+		n++
+		policy = rarutil.OverwriteSkip
+	}
+	if rename {
+		n++
+		policy = rarutil.OverwriteRename
+	}
+	if n > 1 {
+		return 0, false, fmt.Errorf("--overwrite, --skip, --rename are mutually exclusive")
+	}
+	return policy, n == 1, nil
+}
+
+// validateArgs returns a usage exit code (1) for a malformed invocation, or 0.
+// It runs before any archive is opened.
+func validateArgs(inputs []string, mode cliMode, dest string, overwriteSet bool, jobs int) int {
 	usage := func(format string, a ...any) int {
-		fmt.Fprintf(os.Stderr, "rar2zip: "+format+"\n", a...)
-		return 2
+		fmt.Fprintf(os.Stderr, "macrarcli: "+format+"\n", a...)
+		return 1
 	}
 	if len(inputs) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rar2zip [flags] <input.rar> [more.rar ...]")
-		return 2
+		fmt.Fprintln(os.Stderr, "usage: macrarcli [flags] <input.rar> [more.rar ...]")
+		return 1
 	}
-	if output != "" && outDir != "" {
-		return usage("-o/--output and --out-dir are mutually exclusive")
-	}
-	if output != "" && len(inputs) > 1 {
-		return usage("-o/--output targets a single file; use --out-dir for multiple inputs")
+	if (mode == modeList || mode == modeTest) && (dest != "" || overwriteSet) {
+		return usage("-o/--dest and --overwrite/--skip/--rename write output; -l/--list and -t/--test are read-only")
 	}
 	if jobs < 1 {
 		return usage("--jobs must be >= 1")
-	}
-	if store && level != 0 {
-		return usage("cannot combine --store and --level")
-	}
-	if level != 0 && (level < 1 || level > 9) {
-		return usage("--level must be between 1 and 9 (use --store for no compression)")
 	}
 	for _, src := range inputs {
 		if !strings.EqualFold(filepath.Ext(src), ".rar") {
@@ -44,24 +93,6 @@ func validateArgs(inputs []string, output, outDir string, jobs int, store bool, 
 		}
 	}
 	return 0
-}
-
-// buildJobs resolves each input to its destination ZIP and rejects a batch in
-// which two distinct inputs resolve to the same output. Without this guard a
-// concurrent batch would race to last-writer-wins, silently losing one input's
-// data — the same data-loss class as intra-archive name collisions.
-func buildJobs(inputs []string, output, outDir string) ([]convert.Job, error) {
-	jobs := make([]convert.Job, 0, len(inputs))
-	seen := make(map[string]string, len(inputs)) // dst -> first src that claimed it
-	for _, src := range inputs {
-		dst := resolveDst(src, output, outDir)
-		if prev, dup := seen[dst]; dup {
-			return nil, fmt.Errorf("inputs %q and %q both map to output %q; rename one or convert them separately", prev, src, dst)
-		}
-		seen[dst] = src
-		jobs = append(jobs, convert.Job{Src: src, Dst: dst})
-	}
-	return jobs, nil
 }
 
 // parseSize converts a byte-size string into a count of bytes. It accepts a
@@ -91,23 +122,4 @@ func parseSize(s string) (int64, error) {
 		return 0, fmt.Errorf("must be >= 0")
 	}
 	return n * mult, nil
-}
-
-// resolveDst computes the destination ZIP path for one input. --out-dir places
-// <base>.zip in that directory; -o names a file (or, if it is an existing
-// directory, places <base>.zip inside it); otherwise the output is the sibling
-// <input>.zip.
-func resolveDst(src, output, outDir string) string {
-	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src)) + ".zip"
-	switch {
-	case outDir != "":
-		return filepath.Join(outDir, base)
-	case output != "":
-		if fi, err := os.Stat(output); err == nil && fi.IsDir() {
-			return filepath.Join(output, base)
-		}
-		return output
-	default:
-		return filepath.Join(filepath.Dir(src), base)
-	}
 }

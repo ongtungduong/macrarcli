@@ -1,13 +1,19 @@
 version: 2
 
+# Explicit override: GoReleaser otherwise infers {{ .ProjectName }} from the
+# git remote/repo directory name. The GitHub repository itself has not been
+# renamed yet (a manual, external step — see README/CONTRIBUTING) so without
+# this override, archive names would silently keep the old "rar2zip" name.
+project_name: macrarcli
+
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: rar2zip
+  - id: macrarcli
     main: .
-    binary: rar2zip
+    binary: macrarcli
     goos:
       - linux
       - darwin
@@ -23,8 +29,8 @@ builds:
       - -X main.commit={{.ShortCommit}}
 
 archives:
-  - id: rar2zip
-    ids: [rar2zip]
+  - id: macrarcli
+    ids: [macrarcli]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     # Windows users expect a .zip (and Scoop requires it).
@@ -73,29 +79,29 @@ changelog:
 # unsigned-binary UX on macOS. `brews` still works in the pinned v2.16.0 (deprecated,
 # not removed); revisit the cask migration when goreleaser schedules removal.
 brews:
-  - name: rar2zip
+  - name: macrarcli
     # Skip publishing to tap when token is not configured.
     skip_upload: "{{ if eq .Env.HOMEBREW_TAP_TOKEN \"\" }}true{{ end }}"
     repository:
       owner: ongtungduong
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://github.com/ongtungduong/rar2zip"
-    description: "Convert RAR archives to ZIP — pure-Go, no unrar required"
+    homepage: "https://github.com/ongtungduong/macrarcli"
+    description: "Extract RAR archives directly — pure-Go, no unrar required"
     license: "MIT"
     install: |
-      bin.install "rar2zip"
+      bin.install "macrarcli"
     test: |
-      system "#{bin}/rar2zip", "--version"
+      system "#{bin}/macrarcli", "--version"
 
 scoops:
-  - name: rar2zip
+  - name: macrarcli
     # Skip publishing to the bucket when no token is configured (mirrors brews).
     skip_upload: "{{ if eq .Env.SCOOP_TAP_TOKEN \"\" }}true{{ end }}"
     repository:
       owner: ongtungduong
       name: scoop-bucket
       token: "{{ .Env.SCOOP_TAP_TOKEN }}"
-    homepage: "https://github.com/ongtungduong/rar2zip"
-    description: "Convert RAR archives to ZIP — pure-Go, no unrar required"
+    homepage: "https://github.com/ongtungduong/macrarcli"
+    description: "Extract RAR archives directly — pure-Go, no unrar required"
     license: MIT

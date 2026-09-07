@@ -1,9 +1,45 @@
 # Changelog
 
-Notable changes to rar2zip. Behavior changes that affect observable output or
-defaults are called out explicitly.
+Notable changes to macrarcli (formerly rar2zip). Behavior changes that affect
+observable output or defaults are called out explicitly.
 
 ## Unreleased
+
+### Breaking — pivot from ZIP conversion to direct RAR extraction
+
+This release renames the project and changes what it does: `rar2zip`
+converted RAR to ZIP; `macrarcli` extracts RAR archives directly. No ZIP
+output.
+
+- **Module and binary renamed.** `github.com/ongtungduong/rar2zip` ->
+  `github.com/ongtungduong/macrarcli`; the built binary is now `macrarcli`.
+  Clean cutover, no compatibility shim or deprecated formula.
+- **New command surface.** `-e`/`--flat` (extract flat), `-l`/`--list`
+  (preview, read-only), `-t`/`--test` (checksum-only validation, read-only);
+  no mode flag extracts preserving directory structure (the new default —
+  previously the default was ZIP conversion). `-o`/`--output`/`--out-dir`
+  collapse into a single `-o`/`--dest <dir>` naming a destination directory.
+  `--overwrite`/`--skip`/`--rename` replace `-f`/`--force` and
+  `--skip-existing` as three mutually-exclusive per-entry collision policies.
+- **`--store`, `--level`, `--verify`, `--allow-fallback` removed.** All were
+  ZIP-specific or tied to the removed system-`unrar`/`7z` fallback path,
+  which no longer exists — the pure-Go decoder (`nwaples/rardecode/v2`)
+  already covers RAR5, and removing the fallback also removes its documented
+  "not bomb-bounded" weakness.
+- **New 5-code exit scheme.** `0` success / `1` usage error / `2` wrong-or-
+  missing password / `3` corrupted entry / `4` other runtime error, replacing
+  the previous `0`/`1`/`2` scheme. Exit `2` is only reliably guaranteed for
+  RAR5-encrypted archives — `rardecode` has no equivalent sentinel for legacy
+  RAR3/4, so a wrong password there may report exit `3` instead (documented
+  limitation, not a bug — see `README.md`).
+- **Extraction is now atomic per archive.** Entries are staged in a private
+  temporary directory and committed into the destination only once the whole
+  archive has decoded successfully; a failure rolls back the entire staging
+  directory instead of leaving a partial extraction.
+- **New:** `-t`/`--test` (checksum-only validation), password prompting
+  (masked, via `golang.org/x/term` — the one new runtime dependency), and a
+  live single-archive progress line (`[%] name (throughput/s)`). `-l`/`--list`
+  now also reports each entry's compressed size and encrypted flag.
 
 ## 0.2.1 — 2026-06-18
 
