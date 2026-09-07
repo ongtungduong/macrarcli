@@ -5,6 +5,8 @@ observable output or defaults are called out explicitly.
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-07
+
 ### Hardened
 - **`--max-size`/`--max-entries` now default to `20G`/`200000` instead of
   unlimited.** Behavior change: a script relying on the previous unbounded
@@ -32,6 +34,8 @@ observable output or defaults are called out explicitly.
   printed in input order. `-l`'s internal signature also now takes the same
   `Options` every other mode does, so a future option reaches list mode
   automatically instead of needing separate plumbing.
+
+## 0.3.0 — 2026-09-07
 
 ### Breaking — pivot from ZIP conversion to direct RAR extraction
 
