@@ -71,11 +71,11 @@ func resolveOverwritePolicy(overwrite, skip, rename bool) (policy rarutil.Overwr
 // It runs before any archive is opened.
 func validateArgs(inputs []string, mode cliMode, dest string, overwriteSet bool, jobs int) int {
 	usage := func(format string, a ...any) int {
-		fmt.Fprintf(os.Stderr, "rar2zip: "+format+"\n", a...)
+		fmt.Fprintf(os.Stderr, "macrarcli: "+format+"\n", a...)
 		return 1
 	}
 	if len(inputs) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rar2zip [flags] <input.rar> [more.rar ...]")
+		fmt.Fprintln(os.Stderr, "usage: macrarcli [flags] <input.rar> [more.rar ...]")
 		return 1
 	}
 	if (mode == modeList || mode == modeTest) && (dest != "" || overwriteSet) {

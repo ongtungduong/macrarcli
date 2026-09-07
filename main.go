@@ -1,9 +1,9 @@
-// Command rar2zip extracts .rar archives directly: list contents, extract
+// Command macrarcli extracts .rar archives directly: list contents, extract
 // (preserving structure or flat), or validate integrity — no ZIP output.
 //
 // Usage:
 //
-//	rar2zip [flags] <input.rar> [more.rar ...]
+//	macrarcli [flags] <input.rar> [more.rar ...]
 //
 // By default each input is extracted into the destination directory (cwd
 // unless -o/--dest is given), preserving its internal directory structure.
@@ -71,7 +71,7 @@ func run(args []string) int {
 		verbose     bool
 	)
 
-	fs := flag.NewFlagSet("rar2zip", flag.ContinueOnError)
+	fs := flag.NewFlagSet("macrarcli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&dest, "o", "", "destination directory for extracted files (default: cwd)")
 	fs.StringVar(&dest, "dest", "", "destination directory for extracted files (default: cwd)")
@@ -94,7 +94,7 @@ func run(args []string) int {
 	fs.BoolVar(&verbose, "verbose", false, "print extra diagnostics (decode path, per-archive timing) to stderr")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: rar2zip [flags] <input.rar> [more.rar ...]\n\n"+
+		fmt.Fprintf(os.Stderr, "usage: macrarcli [flags] <input.rar> [more.rar ...]\n\n"+
 			"Extract RAR archives directly (list/extract/extract-flat/test). No ZIP output.\n\n"+
 			"Exit codes: 0 success, 1 usage error, 2 wrong/missing password, 3 corrupted\n"+
 			"entry, 4 other runtime error. Exit code 2 is only guaranteed for RAR5-\n"+
@@ -112,18 +112,18 @@ func run(args []string) int {
 	}
 
 	if showVersion {
-		fmt.Printf("rar2zip v%s (%s)\n", version, commit)
+		fmt.Printf("macrarcli v%s (%s)\n", version, commit)
 		return 0
 	}
 
 	mode, err := resolveMode(flatMode, listMode, testMode)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rar2zip: %v\n", err)
+		fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
 		return 1
 	}
 	overwritePolicy, overwriteSet, err := resolveOverwritePolicy(overwrite, skip, rename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rar2zip: %v\n", err)
+		fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
 		return 1
 	}
 
@@ -134,11 +134,11 @@ func run(args []string) int {
 
 	maxBytes, err := parseSize(maxSize)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rar2zip: invalid --max-size %q: %v\n", maxSize, err)
+		fmt.Fprintf(os.Stderr, "macrarcli: invalid --max-size %q: %v\n", maxSize, err)
 		return 1
 	}
 	if maxEntries < 0 {
-		fmt.Fprintln(os.Stderr, "rar2zip: --max-entries must be >= 0")
+		fmt.Fprintln(os.Stderr, "macrarcli: --max-entries must be >= 0")
 		return 1
 	}
 
@@ -154,7 +154,7 @@ func run(args []string) int {
 	}
 	resolvedPassword, err := rarutil.ResolvePasswordStdin(password, headerEncrypted)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rar2zip: %v\n", err)
+		fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
 		return 2
 	}
 
@@ -192,7 +192,7 @@ func run(args []string) int {
 			dest = "."
 		}
 		if err := os.MkdirAll(dest, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "rar2zip: %v\n", err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
 			return 4
 		}
 		jobList := make([]rarutil.Job, len(inputs))
@@ -287,7 +287,7 @@ func report(results []rarutil.Result, quiet bool) int {
 		switch {
 		case r.Err != nil:
 			failed++
-			fmt.Fprintf(os.Stderr, "rar2zip: %s: %v\n", r.Src, r.Err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %s: %v\n", r.Src, r.Err)
 		case len(r.SkippedEntries) > 0:
 			skipped++
 			if !quiet {
@@ -328,7 +328,7 @@ func runTest(inputs []string, opts rarutil.Options, jsonOut, quiet bool) int {
 		codes[i] = classifyErr(r.Err)
 		if r.Err != nil {
 			failed++
-			fmt.Fprintf(os.Stderr, "rar2zip: %s: %v\n", r.Src, r.Err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %s: %v\n", r.Src, r.Err)
 		} else if !quiet {
 			fmt.Printf("%s: OK\n", r.Src)
 		}

@@ -2,180 +2,197 @@
 
 ## High-Level Architecture
 
-rar2zip is organized as a single-responsibility CLI with a pure-Go conversion engine:
+macrarcli is organized as a single-responsibility CLI with a pure-Go extraction engine:
 
 ```
-rar2zip (CLI)
-    ├── CLI input parsing & orchestration (main.go, cli_args.go)
-    ├── Output formatting (json_output.go, list_output.go)
-    └── Conversion Engine (internal/convert/)
+macrarcli (CLI)
+├── CLI input parsing & orchestration (main.go, cli_args.go)
+├── Output formatting (json_output.go, list_output.go)
+└── Extraction Engine (internal/rarutil/)
+    ├── Core operations: extract, list, test (integrity)
+    ├── Security: sanitization, staging, atomic commits
+    └── Utilities: password resolution, progress tracking, batch orchestration
 ```
 
-The CLI layer handles flags, batch orchestration, and human output. The engine handles the actual RAR→ZIP conversion with bomb defense, Zip-Slip protection, and optional fallback to system tools.
+The CLI layer handles flags, batch orchestration, and output formatting. The engine handles RAR decoding with decompression-bomb defense, Zip-Slip protection, and atomic write semantics.
 
 ## Package Layout
 
 ### `main` Package (Root)
 
-**Responsibility**: CLI entry point, batch orchestration, human output formatting.
+**Responsibility**: CLI entry point, flag parsing, batch orchestration, output formatting.
 
 | File | Purpose | ~LOC |
 |------|---------|------|
-| `main.go` | Entry point, flag parsing, batch orchestration, progress reporting | ~200 |
-| `cli_args.go` | Argument validation, job building, output path resolution, `--max-size` parsing | ~150 |
-| `json_output.go` | Encode results as JSON for `--json` flag | ~80 |
-| `list_output.go` | Format archive listings as human table or JSON for `--list` flag | ~100 |
+| `main.go` | Entry point, flag parsing, mode selection, password resolution, batch dispatch | ~220 |
+| `cli_args.go` | Argument validation, mode/overwrite policy enforcement, size parsing | ~130 |
+| `json_output.go` | JSON formatting for results and listings | ~60 |
+| `list_output.go` | Table formatting for archive listings | ~50 |
 
 **Key Functions**
-- `defaultJobs()` — returns `min(NumCPU, 4)` for concurrent batch limit
-- `newJob()` / `parseDestination()` — resolve output paths from `-o`/`--out-dir` flags
-- `parseSize()` — parse `--max-size` with K/M/G suffixes
-- `summaryJSON()` / `summaryTable()` — format result summaries
+- `run()` — orchestrates mode dispatch and error aggregation
+- `resolveMode()` — enforces -e/-l/-t mutual exclusion
+- `resolveOverwritePolicy()` — enforces overwrite flag mutual exclusion
+- `parseSize()` — parses `--max-size` with K/M/G suffixes
+- `attachProgress()` — wires live progress display for single-archive runs
 
-### `internal/convert` Package
+### `internal/rarutil` Package
 
-**Responsibility**: RAR decode, ZIP encode, bomb caps, Zip-Slip defense, atomic writes, fallback tool integration.
+**Responsibility**: RAR decoding, entry validation, staging-directory extraction, atomic commit, decompression-bomb enforcement, Zip-Slip defense.
 
-**Design Principle**: Keep files focused and under ~200 lines each. Use interfaces to decouple concerns (e.g., `headerReader` for synthetic testing).
+**Design Principle**: Keep concerns focused. Use interfaces to enable synthetic testing without real RAR files (which are proprietary).
 
 #### Core Files
 
 | File | Purpose | ~LOC |
 |------|---------|------|
-| `convert.go` | Entry point `Convert()` — orchestrates native decode, shared emitter, atomic finalization, fallback flow | ~100 |
-| `emit.go` | `zipEmitter` — shared ZIP write path, bomb caps enforcement, post-sanitize dedup, pooled buffers | ~180 |
-| `sanitize.go` | `sanitize()` (Zip-Slip defense), `safeMode()` (Unix permission hardening) | ~80 |
-| `fallback.go` | System tool fallback (`unrar`/`7z`), temp dir extraction, argv hardening, symlink neutralization | ~120 |
-| `batch.go` | `RunBatch()` — bounded concurrency fan-out, continue-on-error, ordered result return | ~60 |
-| `verify.go` | `verify()` — reopen ZIP, check entry count/sizes, force CRC32 validation per entry | ~70 |
-| `list.go` | `List()` — read-only header iteration, same bomb caps, no fallback | ~90 |
-| `compress.go` | `entryMethod()` (Store vs Deflate), `registerCompressor()` (compression levels 1-9) | ~50 |
-| `freespace_unix.go` / `freespace_other.go` | `availableBytes()` — platform-specific free-space check for fallback pre-flight | ~40 each |
+| `extract.go` | `Extract()` — stages to temp dir, commits via atomic rename, rolls back on failure | ~80 |
+| `stage.go` | `commitStaged()` — per-entry mv/collision handling, `makeStagingDir()` | ~170 |
+| `list.go` | `List()` — read-only header iteration with bomb-cap bounding | ~80 |
+| `test.go` | `Test()` — checksum-only validation without writes | ~70 |
+| `writer.go` | `cappedWriter` — stream decompression enforcement; respects `--max-size` | ~130 |
+| `sanitize.go` | `sanitize()` (Zip-Slip defense), `safeMode()` (permission hardening) | ~50 |
+| `password.go` | `ResolvePassword()`, `ResolvePasswordStdin()` — TTY prompt or flag | ~60 |
+| `progress.go` | `ProgressTracker` — live throughput/percentage calculation | ~60 |
+| `batch.go` | `RunBatch()` — bounded concurrency, continue-on-error, ordered results | ~60 |
+| `overwrite.go` | `OverwritePolicy` enum + enforcement (fail/overwrite/skip/rename) | ~80 |
 
-#### Shared Constants & Types
+#### Shared Types & Constants
 
 | Item | Purpose |
 |------|---------|
-| `errLimitBytes` / `errLimitEntries` | Decompression bomb thresholds from `--max-size` / `--max-entries` |
-| `Job` | Input/output paths + flags (password, compression, etc.) |
-| `Result` / `ErrSkipped` | Per-archive result status |
-| `cappedWriter` | I/O wrapper enforcing write-size limits |
-| `resolveName()` / `dedupVariant()` | Entry-name dedup logic (rename repeats, error on collisions) |
+| `Options` | Configuration tuple: password, overwrite policy, bomb caps, flat mode |
+| `Result`, `Job` | Per-archive result and input specification |
+| `OverwritePolicy` enum | Collision handling: Fail, Overwrite, Skip, Rename |
+| `EntryInfo` | Read-only listing data (name, size, packed size, encrypted, mod time) |
+| `ProgressTracker` | Percentage + throughput calculation from processed size/entry count |
+| `cappedWriter` | Stream wrapper enforcing decompression-bomb size cap |
 
-## Data Flow: Single Archive Conversion
+## Data Flow: Single Archive Extraction
 
 ```
-1. main.go: Parse CLI flags, build Job(inputPath, outputPath, flags)
-2. convert.Convert(job):
-   a. Check destination writable, doesn't exist (unless --force)
-   b. Try convertNative():
+1. main.go: Parse flags, build Job(src, dst, opts)
+2. Extract(srcRar, destDir, opts):
+   a. makeStagingDir() → create private temp directory
+   b. extractToStaging():
       - Open RAR via rardecode
       - For each entry:
-        * sanitize(name) → Zip-Slip defense
-        * check bomb caps (size/entry count)
-        * safeMode(perms) → strip dangerous bits
-        * stream to temp ZIP file via emitter
-      - Finalize: atomic os.Rename(tempFile, destination)
-   c. If native fails and --allow-fallback:
-      - Check free space in TMPDIR (early exit if too tight)
-      - Shell out to unrar/7z, extract to temp dir
-      - Walk temp dir, same sanitization/emitter/rename flow
-   d. Return result (success/error)
-3. If --verify:
-   - verify(): reopen output ZIP, iterate all entries, read to EOF (forces CRC check)
-4. Format result (human or JSON), print summary
+        * sanitize(name) → Zip-Slip defense (reject traversal, absolute paths)
+        * safeMode(perms) → strip dangerous bits (symlinks, devices)
+        * emit to staging via cappedWriter (enforces --max-size)
+        * callback OnEntry for progress
+      - On any error: return, let Extract clean up
+   c. commitStaged(stagingDir, destDir, opts):
+      - Walk staged entries
+      - Check destination collisions
+      - Per-entry os.Rename() to destination
+      - On collision per overwrite policy: fail, overwrite, skip, or rename
+      - Return list of skipped entries on OverwriteSkip
+   d. defer os.RemoveAll(stagingDir) cleans up on exit
+3. Format result (human or JSON), print summary
 ```
 
 ## Key Abstractions
 
-### `headerReader` Interface
+### Staging Directory Pattern
+
+All extraction goes to a private temp directory first, then atomically committed:
+- **Advantages**: Clean separation of concerns, safe rollback on any error, no partial destination
+- **Guarantees**: Destination is never partial/truncated; failed extraction leaves no trace
+- **Implementation**: `makeStagingDir()` creates `.macrarcli-staging-*` in destination; each entry streamed to staging via `cappedWriter`; `commitStaged()` then per-entry renames entries into place
+
+### `cappedWriter` Stream Enforcement
 
 ```go
-type headerReader interface {
-    Next() (*tar.Header, error)
+type cappedWriter struct {
+    w         io.Writer
+    cap       int64
+    written   int64
 }
 ```
 
-Allows synthetic testing of sanitization and bomb-cap logic without real RAR files (which are proprietary and can't be generated).
+Wraps the destination stream and enforces `--max-size` at write time:
+- Each Write() adds to total
+- If total exceeds cap, Write() returns error
+- Entry is abandoned, no partial write reaches disk
 
-### `zipEmitter` Struct
+### Sanitization & Collision Guard
 
-Centralizes the ZIP write path for native and fallback flows:
-- Enforces `--max-size` / `--max-entries` caps
-- Applies `sanitize()` to all entry names
-- Handles per-name dedup via `resolveName()`
-- Uses a pooled 512 KB copy buffer
+- `sanitize(name)` rejects: empty, absolute, `..`, `../../etc/passwd` (Zip-Slip defense)
+- `safeMode(mode)` strips: `S_IFLNK`, `S_IFBLK`, `S_IFCHR`, setuid/setgid/sticky bits
+- Post-sanitize collision handling: same name repeated renamed to `(1)`, `(2)`, …; different names colliding after sanitization is a hard error
 
-This shared emitter ensures both paths have identical decompression-bomb and Zip-Slip protection.
+### OverwritePolicy Enum
 
-### Atomic Write Pattern
+Determines destination collision behavior:
+- **OverwriteFail** (0): Error if destination exists (default, fail-closed)
+- **OverwriteOverwrite**: Replace existing file
+- **OverwriteSkip**: Silently skip entry, continue batch
+- **OverwriteRename**: Keep both, rename collider to `name (n)`
 
-All paths follow the same pattern:
-```go
-1. Open temp file in output directory (same filesystem for atomic rename)
-2. Write ZIP to temp via emitter
-3. os.Chmod(tempFile, 0644)
-4. os.Rename(tempFile, destination) — atomic
-5. If any error before step 4: os.Remove(tempFile)
-```
+## Batch Processing
 
-Result: destination is never truncated or partial; failed conversions leave no trace.
+`RunBatch(jobs, opts, maxConcurrent, onProgress)`:
+- Dispatches each Job to a bounded worker pool (semaphore)
+- Each worker calls `Extract()` sequentially on its archive
+- Results collected in order (not completion order)
+- Continue-on-error: failed Job doesn't abort batch
+- Returns results in input order for deterministic output
 
 ## Security Invariants
 
-These must be preserved in any change to `emit.go`, `sanitize.go`, or `fallback.go`:
+Must be preserved in any change to `sanitize.go`, `writer.go`, `stage.go`:
 
-1. **Zip-Slip defense**: Every entry name passes `sanitize()` before packing
-   - Rejects empty, absolute, or traversal names (`..`, `../../etc/passwd`)
-   - Applies both on native and fallback paths
+1. **Zip-Slip defense**: Every entry name passes `sanitize()` before write
+   - Rejects empty, absolute, traversal names
+   - Applies uniformly to all modes (extract, list, test)
 
-2. **Symlink/device neutralization**: `safeMode()` strips S_IFLNK, S_IFBLK, S_IFCHR
-   - Symlink targets stored as file content instead of links
-   - Devices skipped entirely
+2. **Symlink/device neutralization**: `safeMode()` strips dangerous mode bits
+   - Symlink entries stored as regular files (content preserved, links defeated)
+   - Device entries skipped (cannot traverse filesystem)
 
-3. **Decompression-bomb caps**: Applied at stream time via `cappedWriter`
+3. **Decompression-bomb caps**: Enforced at write time via `cappedWriter`
    - `--max-size`: abort if total uncompressed bytes exceed limit
-   - `--max-entries`: abort if entry count exceeds limit
-   - Also bounds `--list` (read-only path)
-   - **Gap**: `--allow-fallback` extracts entire archive BEFORE caps apply (documented in README)
+   - `--max-entries`: abort if entry count exceeds limit (checked per-header iteration)
+   - Also bounds `--list` and `--test` (read-only paths)
 
-4. **Post-sanitize collision guard**: `dedupVariant()` prevents silent data loss
-   - Same raw name (e.g., multi-volume re-streaming): renamed to `name (1)`, `name (2)`, ...
-   - Different raw names colliding after sanitization: hard error (indicates hostile input)
+4. **Atomic writes**: Never partial/truncated outputs
+   - Extract to staging dir first
+   - Each entry only committed via os.Rename on success
+   - Any error before final commit removes staging, leaves destination unchanged
 
-5. **Atomic writes**: Never partial/truncated outputs
-   - Write to temp file, then atomic rename
-   - Any failure removes temp
+5. **Post-sanitize collision guard**: `dedupVariant()` prevents data loss
+   - Same archive entry (multi-volume re-streaming): renamed to `(1)`, `(2)`, …
+   - Different entries colliding after sanitization: hard error (hostile input)
 
 ## Testing Approach
 
-**Fixture-gated tests**: Core logic tested via interface seams + synthetic inputs. Real RAR fixtures (if present in `testdata/`) are converted end-to-end and verified entry-by-entry.
+**Interface-driven testing**: Core logic (sanitization, bomb caps) tested via interface seams + synthetic inputs. No real RAR files required for critical tests.
 
 **Coverage areas**:
-- Sanitization (traversal names, absolute paths, symlinks)
-- Bomb caps enforcement
-- Fallback tool argv hardening
-- Batch concurrency & ordering
-- CRC32 verification
-- ZIP64 handling
+- Sanitization (traversal, absolute paths, encoding)
+- Bomb-cap enforcement (entry count, total size)
+- Batch concurrency (ordering, continue-on-error)
+- Overwrite policies (collision handling)
+- Password resolution (TTY, flag, environment)
 
-**Benchmark hot paths**: Large-entry streaming, `--verify` over many entries, native convert (with fixtures).
+**Fixture-gated tests**: If `testdata/*.rar` exists, end-to-end extraction tests verify real archives.
 
 ## Dependency Map
 
 **Production**
-- `github.com/nwaples/rardecode/v2` — pure-Go RAR decode (native path only)
-- Go standard library (`archive/zip`, `io`, `os`, `flag`, `encoding/json`, etc.)
+- `github.com/nwaples/rardecode/v2` — pure-Go RAR decoder
+- `golang.org/x/term` — masked password TTY prompt
+- Go standard library (`io`, `os`, `flag`, `path`, `encoding/json`, etc.)
 
-**Development/Optional**
-- `unrar` / `7z` — external tools, only for `--allow-fallback` and fallback tests
-- Fixtures in `testdata/*.rar` — optional, tests skip if absent
+**Development/Testing**
+- Test fixtures in `testdata/` (optional, tests skip if absent)
 
-**No dynamic imports** — all dependencies are declared upfront.
+**No dynamic imports** — all dependencies declared in `go.mod`.
 
 ## Module Info
 
-- **Module**: `github.com/ongtungduong/rar2zip`
-- **Go version**: 1.26.2 (see `go.mod`)
-- **Binary name**: `rar2zip`
-- **Latest version**: 0.2.1 (2026-06-18)
+- **Module**: `github.com/ongtungduong/macrarcli`
+- **Go version**: 1.26.2
+- **Binary name**: `macrarcli`
+- **Latest version**: 0.3.0 (2026-09-07)

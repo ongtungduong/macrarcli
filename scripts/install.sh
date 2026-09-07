@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
-# install.sh — download the correct rar2zip release asset and install it.
+# install.sh — download the correct macrarcli release asset and install it.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ongtungduong/rar2zip/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ongtungduong/macrarcli/main/scripts/install.sh | sh
 #   VERSION=v0.2.0 sh install.sh          # pin a version
 #   INSTALL_DIR=/usr/local/bin sh install.sh
 #
@@ -16,7 +16,7 @@
 
 set -eu
 
-REPO="ongtungduong/rar2zip"
+REPO="ongtungduong/macrarcli"
 INSTALL_DIR="${INSTALL_DIR:-}"
 VERSION="${VERSION:-}"
 SKIP_CHECKSUM="${SKIP_CHECKSUM:-}"
@@ -149,9 +149,9 @@ main() {
     [ -n "$VERSION" ] || fatal "could not resolve the latest release version (GitHub API unreachable or rate-limited); set VERSION=vX.Y.Z"
   fi
 
-  info "Installing rar2zip ${VERSION} (${OS}/${ARCH})"
+  info "Installing macrarcli ${VERSION} (${OS}/${ARCH})"
 
-  BASE="rar2zip_${OS}_${ARCH}"
+  BASE="macrarcli_${OS}_${ARCH}"
   TARBALL="${BASE}.tar.gz"
   RELEASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 
@@ -169,11 +169,11 @@ main() {
   DEST_DIR="$(resolve_install_dir)"
   mkdir -p "$DEST_DIR"
 
-  info "Installing to ${DEST_DIR}/rar2zip"
-  cp "${WORK_DIR}/rar2zip" "${DEST_DIR}/rar2zip"
-  chmod +x "${DEST_DIR}/rar2zip"
+  info "Installing to ${DEST_DIR}/macrarcli"
+  cp "${WORK_DIR}/macrarcli" "${DEST_DIR}/macrarcli"
+  chmod +x "${DEST_DIR}/macrarcli"
 
-  info "Done! Run: rar2zip --version"
+  info "Done! Run: macrarcli --version"
 }
 
 main

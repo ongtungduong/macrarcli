@@ -32,7 +32,7 @@ func runList(inputs []string, password string, maxEntries int, jsonOut bool) int
 	printList(os.Stdout, archives)
 	for _, a := range archives {
 		if a.Err != nil {
-			fmt.Fprintf(os.Stderr, "rar2zip: %s: %v\n", a.Src, a.Err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %s: %v\n", a.Src, a.Err)
 		}
 	}
 	return aggregateExit(listExitCodes(archives))

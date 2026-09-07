@@ -30,11 +30,10 @@ func TestMakeStagingDir_CreatesUnderDestDir(t *testing.T) {
 // TestCommitStaged_NestedDirRollback proves that when a commit walk creates
 // several nested directory levels in one pass and then a LATER entry
 // collides and aborts the walk, every directory this commit created is
-// removed — not just a single tracked path per emit call. This is the
-// concrete regression the red-team's manifest-based-rollback finding (a
-// single filepath.Dir(fullPath) MkdirAll call can create multiple levels at
-// once) is about; the staging+commit redesign closes it by tracking every
-// directory actually created during the WalkDir pass, not just one per call.
+// removed — not just a single tracked path per emit call. A single
+// filepath.Dir(fullPath) MkdirAll call can create multiple directory levels
+// at once, so rollback tracks every directory actually created during the
+// WalkDir pass, not just one per call.
 func TestCommitStaged_NestedDirRollback(t *testing.T) {
 	destDir := t.TempDir()
 	// Only a root-level collision exists; "deep/nested/path/" doesn't exist

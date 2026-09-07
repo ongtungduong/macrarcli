@@ -190,7 +190,7 @@ func TestCommitStaged_RenameDoubleCollision(t *testing.T) {
 // under the DEFAULT fail-closed policy (not just --overwrite): os.MkdirAll/
 // os.Rename would otherwise happily follow a symlink at an intermediate path
 // component, since Lstat-based safety only protects the FINAL component of a
-// path. Regression test for a red-team finding on the initial implementation.
+// path.
 func TestCommitStaged_RefusesSymlinkedDirectoryInPath(t *testing.T) {
 	destDir := t.TempDir()
 	escapeTarget := t.TempDir() // stands in for something like /etc

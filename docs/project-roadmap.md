@@ -2,138 +2,103 @@
 
 ## Current Status
 
-**Latest Release**: 0.2.1 (2026-06-18)  
-**Maturity**: Stable and feature-complete for primary use case (RAR→ZIP conversion with security hardening)  
+**Latest Release**: 0.3.0 (2026-09-07) — macrarcli pivot release  
+**Maturity**: Stable and feature-complete for direct RAR extraction  
 **Active Development**: Paused; driven by user feedback and platform support requests
 
-## Completed Phases (Hardening Upgrade Roadmap)
+## Pivot Summary (v0.2.1 → v0.3.0)
 
-All 5 phases of the hardening upgrade roadmap have been completed. See [`plans/260614-2315-rar2zip-hardening-upgrade-roadmap/`](../plans/260614-2315-rar2zip-hardening-upgrade-roadmap/) for full details.
+The project pivoted from `rar2zip` (RAR-to-ZIP converter) to `macrarcli` (direct RAR extractor):
 
-### Phase 1: Correctness & Safety Hardening ✅
+**What changed**:
+- Binary and module renamed for clarity: `github.com/ongtungduong/macrarcli`
+- No ZIP output; extracts RAR archives directly
+- Four modes: extract (preserve structure), flat (-e), list (-l), test (-t)
+- Overwrite policies instead of compression flags
 
-**Focus**: Zip-Slip defense, symlink/device neutralization, decompression-bomb caps
+**Preserved**:
+- Core security invariants (Zip-Slip, bomb caps, atomic writes)
+- Batch processing and concurrent extraction
+- Pure-Go, dependency-minimal architecture
+- Test suite and CI/CD infrastructure
 
-**Delivered**:
-- Entry-name sanitization (reject traversal, absolute, empty names)
-- Symlink/device bit stripping (via `safeMode()`)
-- Per-entry size + total size caps (`--max-size`, `--max-entries`)
-- Post-sanitize name-collision guard (dedup repeats, error on cross-collisions)
-- Comprehensive security review and threat model documentation
+**Rationale**: Direct extraction simplifies the tool, removes format-conversion complexity, and aligns with user workflows (most users want to extract, not convert).
 
-**Security Invariants Locked In**: All code paths (native & fallback) enforce identical hardening.
+## Completed Phases
 
-### Phase 2: Real-World Robustness ✅
+All core extraction features are implemented:
 
-**Focus**: Handle multi-volume sets, exotic archive variants, edge cases
+### Phase 1: Extraction Engine ✅
+- Native RAR decoding via `rardecode/v2`
+- Archive listing with size metadata
+- Integrity validation (checksum-only)
+- Flat and structured extraction modes
 
-**Delivered**:
-- Multi-volume RAR support (`.part1.rar`, `.r00` chains)
-- Password-protected archives (`--password` flag)
-- `--allow-fallback` path for exotic/corrupted RAR variants (shells out to `unrar`/`7z`)
-- Free-space pre-check for fallback extraction (early-exit on tight disks)
-- Fixture-agnostic test coverage via interface seams
+### Phase 2: Security Hardening ✅
+- Zip-Slip defense (path sanitization)
+- Symlink/device neutralization
+- Decompression-bomb caps (`--max-size`, `--max-entries`)
+- Post-sanitize collision guard (dedup + error on cross-collisions)
+- Atomic staging-directory extraction pattern
 
-**Known Gap**: `--allow-fallback` is not decompression-bomb-bounded (documented in README).
+### Phase 3: Usability & Features ✅
+- Password support (TTY prompt or `--password` flag)
+- Overwrite policies (fail, overwrite, skip, rename)
+- Batch processing with concurrency (`--jobs`)
+- JSON output for automation
+- Clear error messages and exit codes
+- Progress reporting for single archives
 
-### Phase 3: Performance & Benchmarks ✅
+### Phase 4: Distribution & Release ✅
+- Keyless code signing (Sigstore/cosign)
+- SHA256 checksum verification in install script
+- Homebrew tap integration
+- Scoop bucket (Windows experimental)
+- One-line install script with cosign verification
 
-**Focus**: Optimize throughput and memory usage
-
-**Delivered**:
-- Pooled 512 KB copy buffer for large-entry streaming (~7% throughput gain, 60-85% fewer allocations)
-- Concurrent batch processing by default (`--jobs` defaults to `min(NumCPU, 4)`)
-- Deterministic ordered output (results printed in input order despite concurrent execution)
-- ZIP64 (>4 GiB) support and round-trip verification
-- Benchmarks for hot paths (streaming, `--verify`, native convert)
-
-**Performance Characteristics**:
-- Single 10 GB archive: ~few seconds on modern hardware
-- Batch of 100 archives: concurrent processing via worker pool
-- Memory: bounded to ~512 KB per concurrent job
-
-### Phase 4: Distribution & Supply-Chain Hardening ✅
-
-**Focus**: Secure releases, packaging, code signing
-
-**Delivered**:
-- Keyless code signing via Sigstore/cosign (Actions OIDC, no stored keys)
-- SHA256 checksum verification in `install.sh`
-- Cosign signature verification in `install.sh` (optional, if cosign installed)
-- Goreleaser automation (multi-platform: linux/darwin/windows, amd64/arm64)
-- Homebrew tap integration (`ongtungduong/homebrew-tap`)
-- Scoop bucket integration (`ongtungduong/scoop-bucket`, Windows experimental)
-- Shell completion scripts (bash, zsh, fish)
-
-**Release Checklist**: Version tag → GitHub Actions → build → sign → publish to Homebrew/Scoop.
-
-### Phase 5: UX & Docs Polish ✅
-
-**Focus**: Documentation, help text, user-facing error messages
-
-**Delivered**:
-- Comprehensive README with examples, flags table, security section, troubleshooting
-- CONTRIBUTING.md for developers
-- TROUBLESHOOTING.md for users
-- Shell completion scripts
-- `--help` and `--version` output
-- Clear error messages (e.g., "output exists (use -f to overwrite)")
-- Project documentation suite (this roadmap, codebase summary, system architecture)
+### Phase 5: Documentation ✅
+- Comprehensive README with examples
+- System architecture and data flow
+- Code standards and conventions
+- TROUBLESHOOTING guide
+- Security threat model documentation
 
 ## Unreleased Work
 
-Currently: **None**
+**Currently**: None
 
 The `docs/project-changelog.md` "Unreleased" section is empty. Backlog is driven by:
-- User bug reports or feature requests (filed via GitHub issues)
-- Platform-specific support requests (e.g., Windows hardening, ARM testing)
-- Dependency updates (e.g., `rardecode` or Go version bumps)
+- User bug reports or feature requests
+- Platform-specific support (Windows hardening, ARM testing)
+- Dependency updates
 
 ## Explicit Out of Scope (YAGNI Decisions)
 
-These features were evaluated and intentionally excluded to keep the tool focused and maintainable:
-
 ### Functionality
 
-| Feature | Rationale | Impact |
-|---------|-----------|--------|
-| stdin/stdout streaming | Adds complexity; one-file-per-invocation is simpler and covers 99% of use cases | Users pipe results via shell redirection (`<` / `>`) instead |
-| RAR5 format support | RAR5 is newer; `rardecode` supports RAR4 well; would need dependency upgrade | RAR5 users need to extract with external tool first |
-| Per-file include/exclude globs | Adds arg parsing complexity; `--list` + shell `grep` covers use case | Users filter via shell (`rar2zip *.rar \| grep pattern`) |
-| Path flattening (`--flatten`) | Contradicts "preserve structure" goal; archive structures usually intentional | Users can restructure via shell or post-processing |
-| Filename encoding override (`--encoding`) | Pure-Go decoder discards raw bytes; re-decoding lossy + path-traversal risk | Users run `unrar -cp936 …` then re-zip for CJK archives |
-| Comment/metadata preservation | RAR comments rare in practice; ZIP comment insertion adds complexity | Comments are dropped (noted in changelog) |
-| Parallel compression within archive | Requires splitting archive pre-write; simpler to use `--jobs` across archives | Batch parallelism covers most throughput needs |
+| Feature | Rationale |
+|---------|-----------|
+| ZIP output | Pivot decision: direct extraction is simpler and more user-friendly |
+| Stdin/stdout streaming | Adds complexity; one-file-per-invocation covers 99% of use cases |
+| RAR5-only archives | `rardecode` focuses on RAR3/4; RAR5 users can use external tools |
+| Per-file include/exclude | Rare use case; shell filtering (`macrarcli -l *.rar \| grep pattern`) covers it |
+| Path restructuring | Archive structures usually intentional; users post-process if needed |
+| Filename encoding override | Pure-Go decoder discards raw bytes; lossy re-decoding not supported |
+| Comment metadata preservation | Rarely used; adds complexity |
+| Parallel compression within archive | Batch concurrency (`--jobs`) covers throughput needs |
 
 ### Distribution
 
-| Package Format | Rationale | Workaround |
-|---|---|---|
-| Docker image | Adds build/publish complexity; CLI is small enough to install directly | Users build locally: `docker run --rm -v $(pwd):/work golang make build` |
-| `winget` / `asdf` / `mise` / `deb` / `rpm` | Fragmentation; Homebrew + install.sh + Scoop covers 95% of use cases | File an issue if your package manager is critical |
+| Package Format | Rationale |
+|---|---|
+| Docker image | CLI is small enough to install directly |
+| deb/rpm/winget/asdf/mise | Homebrew + install.sh + Scoop covers 95% of use cases |
 
 ### Architecture
 
-| Design | Rationale | Impact |
-|---|---|---|
-| Public library (`rar2zip` package) | Tool is not a library; `internal/convert` is private by design | Embedders must shell out to the CLI or fork the code |
-
-## Dependency Updates
-
-### Pinned Versions
-
-| Dependency | Version | Reason |
-|---|---|---|
-| `nwaples/rardecode` | v2.x | Pure-Go RAR decode; actively maintained |
-| Go toolchain | 1.26.2 (see `go.mod`) | Stable; backported security patches |
-| cosign | v2.6.3 (release.yml) | v3.x dropped legacy detached sign-blob flow |
-| goreleaser | v2.16.0 (release.yml) | Stable; pinned to avoid surprise breaking changes |
-
-### Update Process
-
-1. **Minor dependency update** (e.g., `rardecode` v2.1 → v2.2): Bump in `go.mod`, test, no release needed
-2. **Major version update** (e.g., Go 1.26 → 1.27): Coordinate with CI matrix, test Windows/ARM, release if breaking changes
-3. **Security patch**: Test, release immediately with `fix:` prefix in commit message
+| Design | Rationale |
+|---|---|
+| Public library | Tool is not designed as a library; `internal/rarutil` is private |
 
 ## Platform Support Matrix
 
@@ -143,72 +108,99 @@ These features were evaluated and intentionally excluded to keep the tool focuse
 | macOS | arm64 | ✅ | ✅ | Fully supported |
 | Linux | amd64 | ✅ | ✅ | Fully supported |
 | Linux | arm64 | ✅ | ✅ | Fully supported |
-| Windows | amd64 | ✅ | ⚠️ | Experimental (vet only) |
-| Windows | arm64 | ✅ | ⚠️ | Experimental (vet only) |
+| Windows | amd64 | ✅ | ⚠️ | Experimental (build + vet only) |
+| Windows | arm64 | ✅ | ⚠️ | Experimental (build + vet only) |
 
-**Windows Gap**: Test suite is Unix-only (fallback tools and symlinks are Unix-specific). Contributions welcome to add Windows test support (e.g., mock fallback tools).
+**Windows gap**: Test suite is Unix-specific (symlinks, TTY password prompts). Full support requires Windows-native test infrastructure.
 
 ## Success Metrics
 
 ### Reliability
 - ✅ CI pass rate: 100% (all platforms, all PRs)
-- ✅ Test coverage: 80%+ (fixture-gated tests excluded)
-- ✅ No known security bugs (0 reported)
-- ✅ Atomic output: 100% of conversions either fully succeed or fully fail
+- ✅ Test coverage: 80%+ (fixture-gated tests counted separately)
+- ✅ No known security bugs
+- ✅ Atomic output: 100% of extractions either fully succeed or fully fail
 
 ### Performance
 - ✅ Single 10 GiB archive: <10 seconds on modern hardware
 - ✅ Batch concurrency: 4 concurrent archives by default
-- ✅ Memory bound: ~512 KB per concurrent job (pooled buffer)
+- ✅ Memory bound: ~64KB per concurrent job (via `cappedWriter`)
 
 ### Adoption
 - ✅ Homebrew: published and installable
-- ✅ Scoop: experimental Windows support
-- ✅ GitHub releases: signed and checksummed
+- ✅ Scoop: published (experimental Windows support)
+- ✅ GitHub releases: keyless-signed and checksummed
 
 ### Documentation
 - ✅ README: comprehensive with examples and security caveats
-- ✅ CONTRIBUTING.md: developer onboarding + security review checklist
-- ✅ TROUBLESHOOTING.md: user-facing Q&A
-- ✅ System architecture: component diagram + data flow + security invariants
-- ✅ Code standards: explicit conventions for future maintainers
+- ✅ CONTRIBUTING.md: developer onboarding
+- ✅ TROUBLESHOOTING.md: user Q&A
+- ✅ System architecture: components, data flow, security invariants
+- ✅ Code standards: explicit conventions for maintainers
 
-## Feedback & Bug Reports
+## Dependency Management
 
-**Where to File Issues**: https://github.com/ongtungduong/rar2zip/issues
+### Pinned Versions
 
-**Common requests monitored**:
-- Windows support hardening
-- Platform-specific packaging (deb, rpm, winget, asdf)
-- Performance profiles on very large archives (50+ GiB)
-- Exotic RAR variants (rare, usually fallback-handled)
+| Dependency | Version | Reason |
+|---|---|---|
+| `nwaples/rardecode` | v2.x | Pure-Go RAR decoder; actively maintained |
+| `golang.org/x/term` | v0.45.0 | Masked TTY password prompts |
+| Go toolchain | 1.26.2 | Stable; backported security patches |
+| cosign | v2.6.3 | v3.x dropped legacy detached sign-blob flow |
+| goreleaser | v2.16.0 | Pinned to avoid surprise breaking changes |
 
-## Technical Debt & Known Gaps
+### Update Process
+
+1. **Minor dependency update** (e.g., `rardecode` v2.1 → v2.2): Bump `go.mod`, test, no release needed
+2. **Major version update** (e.g., Go 1.26 → 1.27): Coordinate with CI, test all platforms, release if breaking changes
+3. **Security patch**: Test, release immediately with `fix:` prefix
+
+## Known Limitations & Technical Debt
 
 | Item | Severity | Status |
 |---|---|---|
-| `--allow-fallback` not bomb-bounded | Medium | Documented; users must trust archives. Pre-extraction bound planned for future phase. |
-| Windows test suite missing | Low | Experimental status acceptable; contributors welcome. |
-| RAR5 support | Low | No demand; `rardecode` focus is RAR4. File issue if needed. |
-| Per-file globs | Low | Rare use case; shell filtering covers it. |
+| Windows test suite missing | Low | Experimental status acceptable; contributors welcome |
+| Password ambiguity (RAR3/4) | Medium | Legacy archives with wrong password report exit 3 (indistinguishable from corruption in `rardecode`) |
+| RAR5-only archives | Low | No demand; `rardecode` focus is RAR4 |
 
-## How to Contribute
+## High-Impact Contribution Areas
 
-See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for development setup, test conventions, and security review checklist.
-
-**High-Impact Contributions**:
-1. Windows test suite (e.g., mock tools, symlink emulation)
-2. Performance optimizations with benchmarks
-3. Bug reports on exotic archives (always include `--verbose` output)
-4. Translations of `README.md` and `TROUBLESHOOTING.md`
+1. **Windows test coverage** — Enable full CI testing on Windows (mock TTY, symlinks)
+2. **Performance optimizations** — Benchmark-driven improvements for very large archives (50+ GiB)
+3. **Bug reports on exotic archives** — Always include `--verbose` output
+4. **Documentation translations** — README and TROUBLESHOOTING for other languages
 
 ## Future Vision (>2026)
 
 Possible directions if demand materializes:
 
-- **Windows maturity**: Full test coverage, official support drop of "experimental" tag
-- **RAR5 support**: If `rardecode` adds it or significant user demand
-- **Batch progress UI**: Real-time progress bars for large batches (TUI)
-- **Cloud storage**: Native S3/GCS support for sources/destinations
+- **Windows maturity**: Full test coverage, drop "experimental" tag
+- **Batch progress UI**: Real-time progress bars for large batches (TUI with library like `bubbletea`)
+- **Archive introspection**: Detailed metadata without extraction (compression ratio, age distribution, etc.)
+- **Cloud storage**: Native S3/GCS support for sources/destinations (probably out of scope — shell integration handles most)
 
 However, **YAGNI applies**: no work starts until there is concrete user demand and clear requirements.
+
+## How to Contribute
+
+See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for development setup, testing, and security review.
+
+**Process**:
+1. Fork the repo
+2. Create a feature branch
+3. Make changes (follow code standards)
+4. Write/update tests
+5. Run `make fmt vet test` — all must pass
+6. Submit PR with clear description
+
+**Security-sensitive code**: Include a security section in PR description explaining any changes to `sanitize.go`, `writer.go`, or `stage.go`.
+
+## Issue Tracking
+
+**File issues at**: https://github.com/ongtungduong/macrarcli/issues
+
+**When reporting bugs**:
+- Include `macrarcli --version` output
+- Include `macrarcli --verbose` output (extra diagnostics)
+- For security issues: email maintainer privately, don't file public issue

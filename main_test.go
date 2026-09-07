@@ -60,7 +60,7 @@ func TestRun_VersionHelp(t *testing.T) {
 	}
 }
 
-// TestRun_VersionOutput verifies --version prints "rar2zip v<version> (<commit>)".
+// TestRun_VersionOutput verifies --version prints "macrarcli v<version> (<commit>)".
 func TestRun_VersionOutput(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -83,11 +83,11 @@ func TestRun_VersionOutput(t *testing.T) {
 		t.Fatalf("--version exited %d, want 0", code)
 	}
 	s := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(s, "rar2zip ") {
-		t.Errorf("version output %q does not start with 'rar2zip '", s)
+	if !strings.HasPrefix(s, "macrarcli ") {
+		t.Errorf("version output %q does not start with 'macrarcli '", s)
 	}
 	if !strings.Contains(s, "(") || !strings.Contains(s, ")") {
-		t.Errorf("version output %q missing commit parens, want 'rar2zip v<ver> (<commit>)'", s)
+		t.Errorf("version output %q missing commit parens, want 'macrarcli v<ver> (<commit>)'", s)
 	}
 }
 

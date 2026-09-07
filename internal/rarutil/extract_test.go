@@ -270,10 +270,9 @@ func digestDir(t *testing.T, root string) (files map[string]string, dirs map[str
 	return files, dirs
 }
 
-// TestCommitStaged_ConcurrentJobsSharedDestDir proves the exact scenario the
-// red-team's Critical Finding 1 described: two "jobs" committing into the
-// same destDir concurrently never lose either job's output, and one job's
-// failure never deletes the other's already-succeeded entries. Uses
+// TestCommitStaged_ConcurrentJobsSharedDestDir proves two "jobs" committing
+// into the same destDir concurrently never lose either job's output, and one
+// job's failure never deletes the other's already-succeeded entries. Uses
 // commitStaged directly (no RAR needed) since the concurrency guarantee lives
 // entirely in the staging/commit boundary, not in RAR decoding.
 func TestCommitStaged_ConcurrentJobsSharedDestDir(t *testing.T) {

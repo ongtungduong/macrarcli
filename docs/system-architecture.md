@@ -2,344 +2,219 @@
 
 ## Component Diagram
 
-```mermaid
-graph TB
-    User["User / CLI"]
-    Main["main.go<br/>(Flag parsing,<br/>batch orchestration)"]
-    CLIArgs["cli_args.go<br/>(Arg validation,<br/>job building)"]
-    Convert["convert.go<br/>(Engine entry)"]
-    Native["convertNative()<br/>(Pure-Go RAR decode)"]
-    Fallback["convertViaFallback()<br/>(System tool shell-out)"]
-    Emitter["zipEmitter<br/>(Shared ZIP write,<br/>bomb caps, dedup)"]
-    Sanitize["sanitize.go<br/>(Zip-Slip defense)"]
-    Verify["verify.go<br/>(CRC32 check)"]
-    RAR["nwaples/rardecode<br/>(Go lib)"]
-    System["unrar / 7z<br/>(System tools)"]
-    ZIP["archive/zip<br/>(Go lib)"]
-    Output["Output<br/>(JSON or human)"]
-    
-    User -->|CLI input| Main
-    Main -->|parse| CLIArgs
-    CLIArgs -->|build Job| Convert
-    Convert -->|try first| Native
-    Native -->|decode| RAR
-    Native -->|write| Emitter
-    Convert -->|fallback if fails| Fallback
-    Fallback -->|extract| System
-    Fallback -->|walk & write| Emitter
-    Emitter -->|sanitize| Sanitize
-    Emitter -->|write ZIP| ZIP
-    Convert -->|if --verify| Verify
-    Verify -->|reopen & check| ZIP
-    ZIP -->|temp + rename| User
-    Main -->|format| Output
-    Output -->|stdout/stderr| User
+```
+User / CLI
+    ↓
+main.go (Flag parsing, mode selection, batch orchestration)
+    ↓
+cli_args.go (Argument validation, job building)
+    ↓
+┌─────────────────────────────────────────────┐
+│ Dispatch by Mode (-l, -t, extract, or flat) │
+└─────────────────────────────────────────────┘
+    ↙           ↓           ↓           ↘
+List()      Test()    Extract()      Extract()
+(read-only)  (r/o)     (preserve)      (flat)
+    ↓           ↓           ↓           ↓
+rardecode    rardecode   stage.go      stage.go
+(open, iter) (validate)  extract.go    extract.go
+    ↓           ↓           ↓           ↓
+    ├──→ sanitize.go (Zip-Slip defense) ←──┤
+    │   safeMode() (Permission hardening)   │
+    │   writer.go (Bomb-cap enforcement)    │
+    └────────────────────────────────────────┘
+            ↓
+    os.Rename() — atomic commit
+            ↓
+    Output formatting (JSON or human)
+            ↓
+    Exit code: 0/1/2/3/4
 ```
 
-## Data Flow: Single Archive Conversion
+## Data Flow: Single Archive
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ 1. CLI Parsing (main.go, cli_args.go)                           │
-├─────────────────────────────────────────────────────────────────┤
-│ • Parse flags (-o, --out-dir, --password, --level, --verify, ...) │
-│ • Validate arguments                                             │
-│ • Resolve output paths                                           │
-│ • Build Job: {InputPath, OutputPath, Password, Flags}          │
-└─────────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 2. Main Conversion (convert.go)                                 │
-├─────────────────────────────────────────────────────────────────┤
-│ • Check destination (exists? force? writable?)                  │
-│ • Try convertNative():                                          │
-│   ├─ Open RAR via rardecode/v2                                  │
-│   ├─ Iterate entries:                                           │
-│   │  ├─ Read entry header + data                                │
-│   │  ├─ Sanitize name (Zip-Slip defense)                        │
-│   │  ├─ Check bomb caps (size, entry count)                     │
-│   │  ├─ Harden permissions (safeMode)                           │
-│   │  └─ Stream to temp ZIP via zipEmitter                       │
-│   └─ Return success or error                                    │
-└─────────────────────────────────────────────────────────────────┘
-                          ↓
-                    [Did native fail?]
-                      ↙          ↘
-                   Yes            No
-                    ↓              ↓
-   ┌──────────────────────┐   ┌──────────────┐
-   │ Try convertViaFallback│  │ Skip fallback│
-   │ (if --allow-fallback) │  │              │
-   └──────────────────────┘   └──────────────┘
-         ↓                            ↓
-   • Check free space                 │
-   • Shell: unrar/7z extract to tmp   │
-   • Walk tmp dir                     │
-   • Same sanitize + emitter logic    │
-         ↓                            │
-   ┌─────────────────────────────────┘
+1. CLI Parsing (main.go, cli_args.go)
+   ├─ Parse flags: -o, -e, -l, -t, --password, --max-size, --jobs, etc.
+   ├─ Validate arguments (at least one input, mode exclusion, job count)
+   ├─ Resolve password once (TTY prompt if needed, before batch dispatch)
+   └─ Build Job{Src, Dst, ...}
+
+2. Mode Dispatch
+   ├─ -l (List): rarutil.List()
+   │  ├─ Open RAR read-only
+   │  ├─ Iterate headers
+   │  ├─ Apply --max-entries cap
+   │  └─ Return []EntryInfo with name, size, packed size, encrypted, modtime
    │
-   ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 3. Finalization (atomic write)                                  │
-├─────────────────────────────────────────────────────────────────┤
-│ • Set temp file permissions (0644)                              │
-│ • Atomic os.Rename(tempFile, destination)                       │
-│ • If any error before rename: os.Remove(tempFile)               │
-│   → Destination never partial/truncated                         │
-└─────────────────────────────────────────────────────────────────┘
-                          ↓
-                    [--verify set?]
-                      ↙          ↘
-                   Yes            No
-                    ↓              ↓
-   ┌──────────────────────┐   ┌──────────────┐
-   │ verify():            │  │ Skip verify  │
-   │ • Reopen output ZIP  │  │              │
-   │ • Check entry count  │  │              │
-   │ • Read all entries   │  │              │
-   │   to EOF (CRC32)     │  │              │
-   └──────────────────────┘   └──────────────┘
-         ↓                            ↓
-   ┌─────────────────────────────────┘
+   ├─ -t (Test): rarutil.Test()
+   │  ├─ Open RAR
+   │  ├─ Iterate entries via cappedWriter (enforces --max-size)
+   │  ├─ Read to EOF to force CRC32 validation
+   │  └─ Return success or corruption error
    │
-   ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 4. Report & Exit                                                │
-├─────────────────────────────────────────────────────────────────┤
-│ • Format result (JSON or human)                                 │
-│ • Print summary to stdout/stderr                                │
-│ • Exit code: 0 (success), 1 (runtime error), 2 (usage error)   │
-└─────────────────────────────────────────────────────────────────┘
+   └─ Extract (default, -e for flat): rarutil.Extract()
+      ├─ makeStagingDir() → create private temp directory
+      ├─ extractToStaging():
+      │  ├─ Open RAR via rardecode.OpenReader()
+      │  ├─ For each entry:
+      │  │  ├─ sanitize(name) → reject traversal/absolute paths (Zip-Slip)
+      │  │  ├─ safeMode(mode) → strip symlink/device/setuid bits
+      │  │  ├─ If Flat: name = path.Base(name)
+      │  │  └─ Stream to staging via cappedWriter (--max-size enforcement)
+      │  └─ Any error: return immediately, Extract cleans up defer
+      │
+      ├─ commitStaged():
+      │  ├─ Walk staged entries
+      │  ├─ For each: check destination collision
+      │  ├─ Per overwrite policy:
+      │  │  ├─ Fail (default): error if exists
+      │  │  ├─ Overwrite: Replace existing
+      │  │  ├─ Skip: Leave destination, track as skipped
+      │  │  └─ Rename: Keep both, suffix collider with " (n)"
+      │  ├─ os.Rename() each entry into destination (atomic per-entry)
+      │  └─ Return []string of skipped names
+      │
+      └─ defer os.RemoveAll(stagingDir) on any error
+
+3. Output Formatting
+   ├─ If --json: reportJSON() or reportTestJSON() to stdout
+   ├─ If human: Print per-entry status to stdout/stderr
+   └─ Batch summary: "{N} succeeded, {M} partial, {F} failed"
+
+4. Exit Code Aggregation
+   ├─ Per-job: classifyErr() → 0/1/2/3/4
+   ├─ Batch: aggregateExit() → highest priority (2 > 3 > 4)
+   └─ Return process exit code
 ```
 
 ## Batch Processing Flow
 
-```mermaid
-graph TB
-    Input["Multiple input files<br/>(*.rar)"]
-    Batch["RunBatch()"]
-    Semaphore["Semaphore<br/>(--jobs limit)"]
-    Worker["Worker goroutine<br/>(convert single archive)"]
-    Results["Result buffer<br/>(ordered)"]
-    Output["Output results<br/>(same order as input)"]
-    
-    Input -->|[]Job| Batch
-    Batch -->|bounded by --jobs| Semaphore
-    Semaphore -->|release slot| Worker
-    Worker -->|convert| Worker
-    Worker -->|result| Results
-    Results -->|maintain order| Output
-    Output -->|deterministic| User["User"]
 ```
+Multiple input files (*.rar)
+    ↓
+RunBatch(jobs []Job, opts, maxConcurrent)
+    ├─ Create semaphore with maxConcurrent slots
+    ├─ For each Job (concurrently up to limit):
+    │  ├─ Acquire semaphore slot
+    │  ├─ Call Extract(job.Src, job.Dst, opts)
+    │  ├─ Store result in order (maintain input order)
+    │  └─ Release semaphore slot
+    └─ Return results []Result in input order
 
-**Key properties**:
-- Concurrent by default: `--jobs` defaults to `min(NumCPU, 4)`
-- Continue-on-error: failed archive doesn't abort batch
-- Deterministic output: results printed in input order, not completion order
-- Exit code: non-zero if any archive failed
-
-## Shared Emitter (Core Security Component)
-
-The `zipEmitter` centralizes all ZIP write logic, ensuring identical hardening on both native and fallback paths:
-
+Key properties:
+• Concurrent by default: --jobs defaults to min(NumCPU, 4)
+• Continue-on-error: failed Job doesn't abort batch
+• Deterministic output: results printed in input order, not completion order
+• Exit code: highest-priority error code wins (2 > 3 > 4)
 ```
-Input Entry
-  ↓
-[sanitize(name)] → Reject if: empty, absolute, contains ..
-  ↓
-[checkCount()] → Increment entry count, fail if > --max-entries
-  ↓
-[resolveName()] → Dedup: rename repeats to (1), (2), ... ; error on non-repeat collisions
-  ↓
-[safeMode()] → Strip S_IFLNK, S_IFBLK, S_IFCHR bits
-  ↓
-[cappedWriter] → Stream content via pooled buffer, fail if > --max-size
-  ↓
-[Output ZIP entry]
-```
-
-This single path for all conversions prevents divergence between native and fallback security.
 
 ## Security Invariants
 
+These must be preserved in any change affecting extraction:
+
 ### 1. Zip-Slip Defense
 
-**Threat**: Malicious entry names (`../../etc/passwd`) extract outside the intended root.
+Every entry name sanitized before staging:
+- `sanitize()` rejects: empty names, absolute paths (Unix or Windows), `..` patterns
+- Applied to both extract and list modes
+- No exception for flat extraction (base name of path is already sanitized)
 
-**Defense**:
-```go
-func sanitize(name string) (string, error) {
-    // Reject empty, absolute, and traversal names
-    if name == "" || path.IsAbs(name) || strings.Contains(name, "..") {
-        return "", fmt.Errorf("invalid entry name")
-    }
-    // Clean and normalize
-    return path.Clean(name), nil
-}
-```
-
-**Applied**: All entries, before ZIP write. Both native and fallback.
+**Verification**: Read `sanitize.go`, check all `rr.Next()` callers pass through `sanitize()`
 
 ### 2. Symlink/Device Neutralization
 
-**Threat**: Symlinks/devices extract as-is, becoming attack vectors (e.g., symlink to root files).
+`safeMode()` strips dangerous mode bits:
+- `S_IFLNK` (symlinks stored as regular files)
+- `S_IFBLK`, `S_IFCHR` (block/character devices skipped)
+- `S_ISUID`, `S_ISGID`, `S_ISVTX` (setuid/setgid/sticky removed)
 
-**Defense**:
-```go
-func safeMode(m os.FileMode) os.FileMode {
-    // Strip symlink, block device, char device, setuid bits
-    m = m & ^(fs.ModeSymlink | fs.ModeDevice | fs.ModeCharDevice | fs.ModeSetuid)
-    if m&fs.ModeDir == 0 {
-        m |= fs.ModeRegular  // Regular file
-    }
-    return m
-}
-```
+**Rationale**: Symlink with unsanitized target could escape extraction root; devices bypass filesystem checks.
 
-**Effect**: Symlinks stored as regular files (target text becomes content). Devices skipped. Result is inert data.
+**Verification**: All `emit()` calls in `extractToStaging()` pass through `safeMode()`
 
-### 3. Decompression-Bomb Defense
+### 3. Decompression-Bomb Enforcement
 
-**Threat**: Archive expands from 10 KB to 10 GB (compression bomb).
+Enforced at two points:
 
-**Defense**:
-```go
-// Enforce at stream time via cappedWriter
-if uncompressedSize > maxSizeBytes {
-    return fmt.Errorf("archive size exceeds --max-size limit")
-}
-if entryCount > maxEntries {
-    return fmt.Errorf("entry count exceeds --max-entries limit")
-}
-```
+**Stream-time** (per-entry size):
+- `cappedWriter` in `writer.go` wraps destination
+- Each `Write()` accumulates bytes
+- If total exceeds `--max-size`, return error, abandon entry
+- No partial data reaches disk
 
-**Scope**:
-- ✅ Native path: caps applied during stream
-- ✅ Fallback path: **NOT** applied until after external tool extraction (documented gap)
-- ✅ `--list` preview: same caps as conversion
+**Header-time** (entry count):
+- During `listEntries()` iteration, check `len(entries) >= maxEntries`
+- If cap hit, return partial list + `errLimitEntries`
+- Early exit before allocation spirals
 
-**Flags**: `--max-size <n>` and `--max-entries <n>` (default: 0 = unlimited).
+**Gaps**: None on native path. Documented limit: entries staged before cap-check are written; cap enforces stream-time cutoff, not pre-staging validation.
 
-### 4. Post-Sanitize Name Collision Guard
+### 4. Atomic Writes
 
-**Threat**: Silent data loss via entry name overwrite.
+Pattern applied universally:
+1. Open temp file in destination directory (same filesystem)
+2. Write entry to staging or ZIP
+3. On entry success: `os.Rename(staged, destination)` — atomic
+4. On any error: `defer os.RemoveAll(stagingDir)` cleans up
 
-**Defense**:
-```go
-// dedupVariant: same raw name (multi-volume) → rename to (1), (2), ...
-// dedupVariant: different raw names colliding after sanitization → ERROR
-if seenName[sanitized] && origName != previousOrigName {
-    return fmt.Errorf("name collision after sanitization (data loss)")
-}
-```
+**Guarantees**: Destination is never truncated or partial; failed extraction leaves no trace.
 
-**Examples**:
-- Entry "file.txt" appears twice (multi-volume) → stored as "file.txt" and "file.txt (1)"
-- Entries "file.txt" and "file.TXT" both sanitize to "file.txt" → ERROR (indicative of hostile input)
+### 5. Post-Sanitize Collision Guard
 
-### 5. Atomic Writes
+Collision handling via overwrite policies:
+- **Same raw name repeated** (multi-volume re-streaming): Renamed to `name (1)`, `name (2)`, …
+- **Different raw names colliding after sanitization**: Hard error (indicates hostile input, e.g., `a/b` + `a%2Fb` both sanitizing to `a/b`)
 
-**Threat**: Partial/corrupted output if write fails mid-stream.
+**Verification**: Read `stage.go`, check dedup logic in `commitStaged()`
 
-**Defense**:
-```go
-// Always write to temp file first
-tempFile, _ := ioutil.TempFile(destDir, "rar2zip-*")
-// Write ZIP to tempFile
-// On success:
-os.Chmod(tempFile.Name(), 0644)
-os.Rename(tempFile.Name(), destination)  // Atomic
-// On failure:
-os.Remove(tempFile.Name())  // Clean up
-```
+## Mode Semantics
 
-**Result**: Destination is never touched/truncated until the entire write succeeds.
+| Mode | Flag | Behavior | Writes | Exit Code |
+|------|------|----------|--------|-----------|
+| Extract | (default) | Preserve directory structure | Yes | 0/1/2/3/4 |
+| Flat | -e, --flat | Extract to single directory | Yes | 0/1/2/3/4 |
+| List | -l, --list | Preview contents only | No | 0/1/2/3/4 |
+| Test | -t, --test | Validate integrity only | No | 0/1/2/3/4 |
 
-### 6. Argv Hardening (Fallback Only)
+**Mutual exclusion**: Only one of -e, -l, -t may be specified; all are mutually exclusive with write flags.
 
-**Threat**: Tool option injection or list-file (@file) abuse.
+## Overwrite Policies
 
-**Defense**:
-```go
-// Use -- to end options before filenames
-args := []string{tool, "x", "--", archivePath}
-// Use safeArgPath() to strip @ prefix
-args = append(args, safeArgPath(destDir))
-```
+Determines behavior when destination file exists:
 
-**Effect**: Archive filename can't be misread as a flag (e.g., `-x`) or list-file directive (e.g., `@payload`).
+| Policy | Behavior |
+|--------|----------|
+| OverwriteFail (default) | Error immediately, abort this archive |
+| OverwriteOverwrite | Replace destination with staged entry |
+| OverwriteSkip | Keep destination, skip this entry, track skipped count |
+| OverwriteRename | Keep destination, rename entry to `name (n)` |
 
-## Performance Characteristics
+**Mutual exclusion**: Only one of `--overwrite`, `--skip`, `--rename` may be set.
 
-### Memory
+## Password Handling
 
-- **Pooled buffers**: Single 512 KB copy buffer shared across concurrent jobs → bounded heap
-- **Streaming ZIP write**: No in-memory archive; entries written as decoded → flat memory per-entry
-- **Batch concurrency**: Bounded by `--jobs` (default 4) → controlled resource usage
+Password resolved **once per invocation**, before batch dispatch:
 
-### CPU
+1. If `--password` provided: use it
+2. If encrypted archive detected and no password: prompt on TTY (masked input)
+3. If non-TTY (CI, pipe): fail fast with clear error
+4. Single resolved password reused for all archives in batch
 
-- **Streaming**: No full-archive load; processing is I/O-bound most of the time
-- **Concurrent batch**: Default `min(NumCPU, 4)` jobs → leverages multi-core without overwhelming single-archive throughput
+**Rationale**: Prevents multiple TTY prompts in batch; prevents concurrent password races on shared stdin.
 
-### Disk I/O
+## Error Propagation
 
-- **Single-pass write**: Entries written directly to temp ZIP → no intermediate copies
-- **Atomic rename**: Same filesystem (temp file in output dir) → nanosecond atomicity
-- **Free-space pre-check** (fallback only): Early exit if temp dir is too tight
+Errors classified into exit codes (per `main.go:classifyErr`):
 
-## Platform Considerations
+| Code | Meaning | rardecode Sentinel |
+|------|---------|-------------------|
+| 0 | Success | — |
+| 1 | Usage error | — |
+| 2 | Wrong/missing password | `ErrBadPassword` (RAR5 only) |
+| 3 | Corrupted entry | `ErrBadFileChecksum` |
+| 4 | Other runtime error | — |
 
-### Unix (macOS, Linux)
+**Batch aggregation** (per `aggregateExit`): Highest-priority code wins (2 > 3 > 4).
 
-- Full support: native decode, fallback tools, symlinks, Unix permissions
-- Free-space check via `statfs` (platform-specific)
-- Test suite exercises symlinks and tool fallback
-
-### Windows
-
-- **Experimental**: Build and vet only in CI; test suite Unix-only
-- Native decode works (pure Go)
-- Fallback tools may not be installed; no shell symlink support
-- No `statfs` equivalent; free-space check stubbed (-1/unknown)
-
-**Limitation**: `--allow-fallback` is less reliable on Windows due to missing tools and no symlink emulation in `fallback.go`.
-
-## Observability & Debugging
-
-### Flags for Diagnostics
-
-| Flag | Output |
-|------|--------|
-| `--verbose` | Decode path (native vs fallback) + per-archive timing to stderr |
-| `--json` | Structured result summary to stdout (suppresses human progress) |
-| `--list --json` | Archive contents as JSON (no conversion) |
-| `-q/--quiet` | Suppress progress output |
-
-### Error Reporting
-
-- Runtime errors → stderr, exit code 1
-- Usage errors → stderr, exit code 2
-- Batch errors → per-archive summary, final non-zero exit
-
-## Extensibility & Future Work
-
-### Safe to Extend
-
-- New compression levels (modify `registerCompressor()`)
-- Additional output formats (new output file in root package)
-- New fallback tools (add `lookFallbackTool()` case)
-- Platform-specific features (e.g., `freespace_os2.go`)
-
-### Not Safe to Extend Without Audit
-
-- Sanitization rules (affects Zip-Slip defense)
-- Entry-name dedup logic (affects collision guard)
-- Emitter caps (affects bomb defense)
-- External tool argv construction (affects option injection)
-
-Any change to security-critical code requires:
-1. Threat model review
-2. Synthetic test coverage
-3. Security review checklist (see `code-standards.md`)
+**Known gap**: Legacy RAR3/4 archives with wrong passwords may report exit 3 (indistinguishable from corruption in `rardecode`). This is a library limitation, not a bug.
