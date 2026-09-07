@@ -54,7 +54,7 @@ The CLI layer handles flags, batch orchestration, and output formatting. The eng
 | `sanitize.go` | `sanitize()` (Zip-Slip defense), `safeMode()` (permission hardening) | ~50 |
 | `password.go` | `ResolvePassword()`, `ResolvePasswordStdin()` — TTY prompt or flag | ~60 |
 | `progress.go` | `ProgressTracker` — live throughput/percentage calculation | ~60 |
-| `batch.go` | `RunBatch()` — bounded concurrency, continue-on-error, ordered results | ~60 |
+| `batch.go` | `RunBatch()`, `TestBatch()`, `ListBatch()` — bounded concurrency, continue-on-error, ordered results | ~86 |
 | `overwrite.go` | `OverwritePolicy` enum + enforcement (fail/overwrite/skip/rename) | ~80 |
 
 #### Shared Types & Constants
@@ -132,12 +132,17 @@ Determines destination collision behavior:
 
 ## Batch Processing
 
-`RunBatch(jobs, opts, maxConcurrent, onProgress)`:
-- Dispatches each Job to a bounded worker pool (semaphore)
-- Each worker calls `Extract()` sequentially on its archive
-- Results collected in order (not completion order)
-- Continue-on-error: failed Job doesn't abort batch
-- Returns results in input order for deterministic output
+Three batch functions share a common pattern (bounded concurrency, continue-on-error, ordered results):
+
+- `RunBatch(jobs []Job, opts, maxParallel, onStart)`: Extracts each job via `Extract()`
+- `TestBatch(srcs []string, opts, maxParallel)`: Validates each archive via `Test()`
+- `ListBatch(srcs []string, opts, maxParallel)`: Lists each archive via `List()`
+
+All three:
+- Dispatch to a bounded worker pool (semaphore) with `maxParallel` slots
+- Collect results in input order (not completion order) for deterministic output
+- Continue on error: failed input doesn't abort the batch
+- Return results matching input order
 
 ## Security Invariants
 

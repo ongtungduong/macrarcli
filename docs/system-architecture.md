@@ -93,8 +93,8 @@ rardecode    rardecode   stage.go      stage.go
 ```
 Multiple input files (*.rar)
     ↓
-RunBatch(jobs []Job, opts, maxConcurrent)
-    ├─ Create semaphore with maxConcurrent slots
+RunBatch(jobs []Job, opts, maxParallel)
+    ├─ Create semaphore with maxParallel slots
     ├─ For each Job (concurrently up to limit):
     │  ├─ Acquire semaphore slot
     │  ├─ Call Extract(job.Src, job.Dst, opts)
@@ -107,6 +107,8 @@ Key properties:
 • Continue-on-error: failed Job doesn't abort batch
 • Deterministic output: results printed in input order, not completion order
 • Exit code: highest-priority error code wins (2 > 3 > 4)
+
+**Batch in all modes**: List (-l) and Test (-t) modes use TestBatch() and ListBatch() respectively, following the same concurrency pattern and honoring --jobs.
 ```
 
 ## Security Invariants

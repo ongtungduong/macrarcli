@@ -90,10 +90,14 @@ so output stays deterministic. Multi-volume sets (`.part1.rar` / `.r00`) are
 followed automatically.
 
 If an archive's contents are encrypted and no `--password` is given,
-`macrarcli` prompts for one (masked, no echo) when run interactively; in a
-non-interactive context (CI, a pipe) it fails fast instead of hanging. The
-password is resolved once per invocation and reused across every archive in a
-batch — never re-prompted per archive.
+`macrarcli` checks the `MACRARCLI_PASSWORD` environment variable, then prompts
+for one (masked, no echo) when run interactively; in a non-interactive context
+(CI, a pipe) with neither set it fails fast instead of hanging. The password
+is resolved once per invocation and reused across every archive in a batch —
+never re-prompted per archive. Prefer `MACRARCLI_PASSWORD` over `--password`
+for scripted use: a flag value is visible to other local users via `ps`/
+`/proc/<pid>/cmdline` for the life of the process; an environment variable is
+not.
 
 ### Flags
 
@@ -108,11 +112,11 @@ batch — never re-prompted per archive.
 | `--rename` | Write a colliding entry under a `" (n)"`-suffixed name instead of touching the existing file. Mutually exclusive with `--overwrite`/`--skip`. |
 | `-q`, `--quiet` | Suppress progress output (printed to stderr). |
 | `--verbose` | Print extra diagnostics to stderr: per-archive timing. Suppressed under `--json`/`--quiet`. |
-| `--password <pw>` | Password for encrypted archives. If omitted and the archive needs one, prompts interactively (see above). |
-| `--jobs <n>` | Process up to `n` archives concurrently. Default: `min(NumCPU, 4)`. Per-job results are still printed in input order. |
+| `--password <pw>` | Password for encrypted archives. If omitted, falls back to `$MACRARCLI_PASSWORD`, then prompts interactively (see above). |
+| `--jobs <n>` | Process up to `n` archives concurrently — applies to extraction and to `-l`/`-t`. Default: `min(NumCPU, 4)`. Per-job results are still printed in input order. |
 | `--json` | Emit a machine-readable JSON summary on stdout (suppresses the human progress output). Includes a `mode` field (`extract`/`list`/`test`) and per-job `skippedEntries`. |
-| `--max-size <n>` | Cap the total uncompressed size an archive may expand to (decompression-bomb defense). Accepts a plain byte count or a `K`/`M`/`G` suffix. `0` (default) = unlimited. Tripping the cap leaves no output and exits non-zero. Also enforced by `-t`. |
-| `--max-entries <n>` | Cap the number of entries an archive may contain. `0` (default) = unlimited. Also bounds `-l` and `-t`. |
+| `--max-size <n>` | Cap the total uncompressed size an archive may expand to (decompression-bomb defense). Accepts a plain byte count or a `K`/`M`/`G` suffix. Default `20G`; pass `0` for unlimited. Tripping the cap leaves no output and exits non-zero. Also enforced by `-t`. |
+| `--max-entries <n>` | Cap the number of entries an archive may contain. Default `200000`; pass `0` for unlimited. Also bounds `-l` and `-t`. |
 | `--version` | Print version and exit. |
 | `-h`, `--help` | Print usage and exit. |
 
@@ -159,13 +163,16 @@ cp completions/macrarcli.fish ~/.config/fish/completions/macrarcli.fish
 Untrusted-archive hardening is in place: entry names are sanitized against
 **path traversal (Zip Slip)** and absolute paths, and symlink/device entries
 are neutralized (stored as plain content) so they cannot escape the
-extraction root.
+extraction root. An entry's permission bits are also capped on extract: an
+archive can never make a file group- or other-writable, regardless of what
+mode it recorded.
 
-**Decompression bombs:** extraction and `-t` both stream entries and can be
-bounded with `--max-size`/`--max-entries`; exceeding either cap aborts with no
-output. Duplicate or colliding entry names cannot silently overwrite one
-another — a name that collides only after path sanitization is rejected, and
-legitimate repeats are kept under a renamed entry.
+**Decompression bombs:** extraction and `-t` both stream entries and are
+bounded by `--max-size`/`--max-entries` **by default** (`20G`/`200000`; pass
+`0` to opt into unlimited); exceeding either cap aborts with no output.
+Duplicate or colliding entry names cannot silently overwrite one another — a
+name that collides only after path sanitization is rejected, and legitimate
+repeats are kept under a renamed entry.
 
 **Overwrite safety:** `--overwrite` never writes through a symlink planted at
 the destination path — the collision check uses `lstat`, never `stat`, so a

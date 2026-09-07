@@ -95,6 +95,18 @@ func validateArgs(inputs []string, mode cliMode, dest string, overwriteSet bool,
 	return 0
 }
 
+// resolveExplicitPassword picks the password to use before any TTY prompt is
+// considered: the --password flag always wins if set (matching
+// ResolvePassword's "explicit always wins" contract), otherwise the
+// MACRARCLI_PASSWORD environment variable is used. getenv is injected so this
+// stays unit-testable without mutating process environment.
+func resolveExplicitPassword(flagVal string, getenv func(string) string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return getenv(passwordEnvVar)
+}
+
 // parseSize converts a byte-size string into a count of bytes. It accepts a
 // plain integer or one with a K/M/G (1024-based) suffix; "0" means unlimited.
 func parseSize(s string) (int64, error) {

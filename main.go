@@ -31,6 +31,20 @@ var (
 // contention and memory (one pooled copy buffer per in-flight job) for no gain.
 const maxDefaultJobs = 4
 
+// passwordEnvVar is the environment-variable fallback for --password, so
+// scripted/automated use doesn't have to put a secret in argv (visible via
+// `ps`/`/proc/<pid>/cmdline` to any local user for the life of the process).
+const passwordEnvVar = "MACRARCLI_PASSWORD"
+
+// defaultMaxSize and defaultMaxEntries are the out-of-the-box decompression-
+// bomb caps: unlimited-by-default left a crafted small archive free to
+// exhaust disk or inodes on extract/test with no flag required to trigger it.
+// Pass --max-size 0 / --max-entries 0 explicitly to opt back into unlimited.
+const (
+	defaultMaxSize    = "20G"
+	defaultMaxEntries = 200000
+)
+
 // defaultJobs is the out-of-the-box --jobs value: multi-core but capped, so a
 // `*.rar` batch uses available cores without unbounded fan-out. Always >= 1.
 func defaultJobs() int {
@@ -86,11 +100,11 @@ func run(args []string) int {
 	fs.BoolVar(&rename, "rename", false, "write colliding entries under a \" (n)\" suffixed name instead")
 	fs.BoolVar(&quiet, "q", false, "suppress progress output")
 	fs.BoolVar(&quiet, "quiet", false, "suppress progress output")
-	fs.StringVar(&password, "password", "", "password for encrypted archives")
+	fs.StringVar(&password, "password", "", "password for encrypted archives (or $"+passwordEnvVar+")")
 	fs.IntVar(&jobs, "jobs", defaultJobs(), "number of archives to process concurrently (default: min(NumCPU,4))")
 	fs.BoolVar(&jsonOut, "json", false, "emit a machine-readable JSON summary on stdout")
-	fs.StringVar(&maxSize, "max-size", "0", "cap total uncompressed size (0 = unlimited; accepts K/M/G suffix)")
-	fs.IntVar(&maxEntries, "max-entries", 0, "cap number of entries per archive (0 = unlimited)")
+	fs.StringVar(&maxSize, "max-size", defaultMaxSize, "cap total uncompressed size (default 20G; 0 = unlimited; accepts K/M/G suffix)")
+	fs.IntVar(&maxEntries, "max-entries", defaultMaxEntries, "cap number of entries per archive (default 200000; 0 = unlimited)")
 	fs.BoolVar(&verbose, "verbose", false, "print extra diagnostics (decode path, per-archive timing) to stderr")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
@@ -146,6 +160,9 @@ func run(args []string) int {
 	// single result is reused for every input — never re-resolved per job,
 	// which would re-prompt and race on shared stdin/tty state under
 	// concurrent --jobs. See rarutil.ResolvePassword's doc comment.
+	// The --password flag always wins; MACRARCLI_PASSWORD is the fallback for
+	// scripted use that would otherwise expose the secret via argv.
+	password = resolveExplicitPassword(password, os.Getenv)
 	headerEncrypted := false
 	if password == "" && len(inputs) > 0 {
 		if _, openErr := rardecode.OpenReader(inputs[0]); errors.Is(openErr, rardecode.ErrArchiveEncrypted) {
@@ -184,9 +201,9 @@ func run(args []string) int {
 
 	switch mode {
 	case modeList:
-		return runList(inputs, resolvedPassword, maxEntries, jsonOut)
+		return runList(inputs, opts, jobs, jsonOut)
 	case modeTest:
-		return runTest(inputs, opts, jsonOut, quiet)
+		return runTest(inputs, opts, jobs, jsonOut, quiet)
 	default: // modeExtract, modeFlat
 		if dest == "" {
 			dest = "."
@@ -277,9 +294,18 @@ func aggregateExit(codes []int) int {
 	return 0
 }
 
-// report prints per-job outcomes and a batch summary, returning the
-// aggregate exit code per the 5-code scheme.
-func report(results []rarutil.Result, quiet bool) int {
+// reportHuman prints per-job outcomes and a batch summary to stdout/stderr,
+// returning the aggregate exit code per the 5-code scheme. successLine
+// renders the human success line for a job with no error and no skips
+// (extract: "extracted src -> dst", test: "src: OK"). showPartial selects the
+// summary line's shape: extract's batches can have partial (some-entries-
+// skipped) outcomes, test's never can (Test never skips an entry).
+// quietGatesSuccess preserves a pre-existing per-mode difference: -q was
+// never documented to suppress extract's stdout result line (only stderr
+// progress output — see README's --quiet entry), so extract's success line
+// prints unconditionally; test's success line was already gated by -q before
+// this helper existed, and stays that way.
+func reportHuman(results []rarutil.Result, quiet, showPartial, quietGatesSuccess bool, successLine func(rarutil.Result) string) int {
 	codes := make([]int, len(results))
 	failed, skipped := 0, 0
 	for i, r := range results {
@@ -294,12 +320,18 @@ func report(results []rarutil.Result, quiet bool) int {
 				fmt.Fprintf(os.Stderr, "extracted %s (%d entries skipped)\n", r.Dst, len(r.SkippedEntries))
 			}
 		default:
-			fmt.Printf("extracted %s -> %s\n", r.Src, r.Dst)
+			if !quietGatesSuccess || !quiet {
+				fmt.Println(successLine(r))
+			}
 		}
 	}
 
 	if len(results) > 1 && !quiet {
-		fmt.Fprintf(os.Stderr, "%d succeeded, %d partial, %d failed\n", len(results)-failed-skipped, skipped, failed)
+		if showPartial {
+			fmt.Fprintf(os.Stderr, "%d succeeded, %d partial, %d failed\n", len(results)-failed-skipped, skipped, failed)
+		} else {
+			fmt.Fprintf(os.Stderr, "%d succeeded, %d failed\n", len(results)-failed, failed)
+		}
 	} else if len(results) == 1 && !quiet {
 		// Terminate the single-archive progress line.
 		fmt.Fprintln(os.Stderr)
@@ -308,35 +340,24 @@ func report(results []rarutil.Result, quiet bool) int {
 	return aggregateExit(codes)
 }
 
-// runTest validates each input archive (checksum-only, no filesystem writes)
-// and reports outcomes as a human summary or, with --json, jsonSummary
-// (mode "test"). Returns the aggregate exit code per the 5-code scheme.
-func runTest(inputs []string, opts rarutil.Options, jsonOut, quiet bool) int {
-	results := make([]rarutil.Result, len(inputs))
-	for i, src := range inputs {
-		err := rarutil.Test(src, opts)
-		results[i] = rarutil.Result{Job: rarutil.Job{Src: src}, Err: err}
-	}
+// report is reportHuman for extract/flat mode.
+func report(results []rarutil.Result, quiet bool) int {
+	return reportHuman(results, quiet, true, false, func(r rarutil.Result) string {
+		return fmt.Sprintf("extracted %s -> %s", r.Src, r.Dst)
+	})
+}
+
+// runTest validates each input archive (checksum-only, no filesystem writes),
+// up to maxParallel concurrently, and reports outcomes as a human summary or,
+// with --json, jsonSummary (mode "test"). Returns the aggregate exit code per
+// the 5-code scheme.
+func runTest(inputs []string, opts rarutil.Options, maxParallel int, jsonOut, quiet bool) int {
+	results := rarutil.TestBatch(inputs, opts, maxParallel)
 
 	if jsonOut {
 		return reportTestJSON(results, os.Stdout)
 	}
-
-	codes := make([]int, len(results))
-	failed := 0
-	for i, r := range results {
-		codes[i] = classifyErr(r.Err)
-		if r.Err != nil {
-			failed++
-			fmt.Fprintf(os.Stderr, "macrarcli: %s: %v\n", r.Src, r.Err)
-		} else if !quiet {
-			fmt.Printf("%s: OK\n", r.Src)
-		}
-	}
-	if len(results) > 1 && !quiet {
-		fmt.Fprintf(os.Stderr, "%d succeeded, %d failed\n", len(results)-failed, failed)
-	} else if len(results) == 1 && !quiet {
-		fmt.Fprintln(os.Stderr)
-	}
-	return aggregateExit(codes)
+	return reportHuman(results, quiet, false, true, func(r rarutil.Result) string {
+		return fmt.Sprintf("%s: OK", r.Src)
+	})
 }

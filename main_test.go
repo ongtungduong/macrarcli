@@ -7,7 +7,59 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// whatever it wrote. Used to test human-output functions directly, without
+// needing a real .rar fixture.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	return string(out)
+}
+
+// TestReport_QuietDoesNotSuppressSuccessLine locks a pre-existing, documented
+// distinction that reportHuman's unification must preserve: -q suppresses
+// only progress/summary output (see README's --quiet entry), never extract's
+// stdout result line. A prior refactor accidentally gated this line on quiet
+// too — this test would have caught that regression.
+func TestReport_QuietDoesNotSuppressSuccessLine(t *testing.T) {
+	results := []rarutil.Result{{Job: rarutil.Job{Src: "a.rar", Dst: "out"}}}
+	out := captureStdout(t, func() { report(results, true) })
+	if !strings.Contains(out, "extracted a.rar -> out") {
+		t.Errorf("report(quiet=true) stdout = %q, want it to contain the success line", out)
+	}
+}
+
+// TestReportHuman_QuietGatesTestSuccessLine locks the other half of the same
+// pre-existing distinction: test mode's "src: OK" line WAS already gated by
+// -q before reportHuman existed, and must stay gated (only extract's line is
+// unconditional — see TestReport_QuietDoesNotSuppressSuccessLine above).
+func TestReportHuman_QuietGatesTestSuccessLine(t *testing.T) {
+	results := []rarutil.Result{{Job: rarutil.Job{Src: "a.rar"}}}
+	successLine := func(r rarutil.Result) string { return r.Src + ": OK" }
+
+	out := captureStdout(t, func() { reportHuman(results, true, false, true, successLine) })
+	if out != "" {
+		t.Errorf("reportHuman(quiet=true, quietGatesSuccess=true) stdout = %q, want empty", out)
+	}
+
+	out = captureStdout(t, func() { reportHuman(results, false, false, true, successLine) })
+	if !strings.Contains(out, "a.rar: OK") {
+		t.Errorf("reportHuman(quiet=false, quietGatesSuccess=true) stdout = %q, want it to contain the success line", out)
+	}
+}
 
 // TestRun_ExitCodes covers argument validation paths that don't need a real
 // archive: usage errors now exit 1 (exit 2 is reserved for password errors).
@@ -220,6 +272,22 @@ func TestDefaultJobs(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("defaultJobs() = %d, want min(NumCPU,4) = %d", got, want)
+	}
+}
+
+// TestDefaultCaps locks the out-of-the-box decompression-bomb cap values:
+// unlimited-by-default left a crafted archive free to exhaust disk/inodes
+// with no flag required, so these must stay non-zero.
+func TestDefaultCaps(t *testing.T) {
+	gotBytes, err := parseSize(defaultMaxSize)
+	if err != nil {
+		t.Fatalf("parseSize(defaultMaxSize=%q): %v", defaultMaxSize, err)
+	}
+	if want := int64(20) << 30; gotBytes != want {
+		t.Errorf("defaultMaxSize %q = %d bytes, want %d (20G)", defaultMaxSize, gotBytes, want)
+	}
+	if defaultMaxEntries != 200000 {
+		t.Errorf("defaultMaxEntries = %d, want 200000", defaultMaxEntries)
 	}
 }
 

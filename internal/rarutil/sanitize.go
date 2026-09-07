@@ -41,9 +41,12 @@ func sanitize(name string) (string, error) {
 // mode would make a compliant extractor recreate a link whose (unsanitized)
 // target could point outside the extraction root, defeating the name-based
 // Zip-Slip defense. Stripped to a plain mode, a symlink entry's body is stored
-// as inert regular-file content instead.
+// as inert regular-file content instead. Group/other-write bits are also
+// masked out regardless of what the archive recorded: an attacker-controlled
+// mode of e.g. 0777 must never make an extracted file writable by other local
+// users on a shared destination directory.
 func safeMode(m fs.FileMode, isDir bool) fs.FileMode {
-	perm := m.Perm()
+	perm := m.Perm() &^ 0o022
 	if isDir {
 		return perm | fs.ModeDir
 	}

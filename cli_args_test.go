@@ -40,6 +40,27 @@ func TestParseSize(t *testing.T) {
 	}
 }
 
+func TestResolveExplicitPassword(t *testing.T) {
+	tests := []struct {
+		name    string
+		flagVal string
+		env     string
+		want    string
+	}{
+		{"flag wins over env", "flagpw", "envpw", "flagpw"},
+		{"env used when flag empty", "", "envpw", "envpw"},
+		{"both empty", "", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveExplicitPassword(tc.flagVal, func(string) string { return tc.env })
+			if got != tc.want {
+				t.Errorf("resolveExplicitPassword(%q, env=%q) = %q, want %q", tc.flagVal, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveMode(t *testing.T) {
 	tests := []struct {
 		name             string

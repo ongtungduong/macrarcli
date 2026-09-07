@@ -20,6 +20,14 @@ type EntryInfo struct {
 	IsDir      bool
 }
 
+// ListResult reports one archive's List outcome for a batched preview
+// (see ListBatch): its entries, or the error that prevented reading it.
+type ListResult struct {
+	Src     string
+	Entries []EntryInfo
+	Err     error
+}
+
 // headerReader is the minimal slice of *rardecode.ReadCloser the lister needs:
 // the per-entry iteration core, shared in spirit with Convert. Defining it as an
 // interface lets the cap and field-mapping logic be tested without a RAR fixture

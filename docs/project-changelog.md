@@ -5,6 +5,34 @@ observable output or defaults are called out explicitly.
 
 ## Unreleased
 
+### Hardened
+- **`--max-size`/`--max-entries` now default to `20G`/`200000` instead of
+  unlimited.** Behavior change: a script relying on the previous unbounded
+  default must now pass `--max-size 0 --max-entries 0` explicitly to keep
+  running unlimited. Closes a decompression-bomb gap where a small crafted
+  archive could exhaust disk or inodes with no flag required to trigger it.
+- **Extracted file permission bits are capped.** An archive can no longer make
+  an extracted file group- or other-writable (mode is masked with `&^0o022`
+  after type-bit stripping), regardless of what mode it recorded — previously
+  an archive entry with mode `0777` extracted as world-writable verbatim.
+- **`$MACRARCLI_PASSWORD`** is now a fallback for `--password` (flag still
+  wins if set), so scripted/automated use no longer has to put the secret in
+  argv, which is visible to other local users via `ps`/`/proc/<pid>/cmdline`
+  for the life of the process.
+- The cross-filesystem rename fallback (`stage.go`, only reached when staging
+  and the destination are on different filesystems) now opens its destination
+  with `O_NOFOLLOW` on unix, closing a narrow TOCTOU window where a symlink
+  planted at the destination path between the existence check and the open
+  could otherwise be written through.
+
+### Changed
+- **`-l`/`--list` and `-t`/`--test` now honor `--jobs`.** Previously only
+  extraction ran a multi-archive batch concurrently; list/test always ran
+  sequentially regardless of `--jobs`. Per-archive result lines are still
+  printed in input order. `-l`'s internal signature also now takes the same
+  `Options` every other mode does, so a future option reaches list mode
+  automatically instead of needing separate plumbing.
+
 ### Breaking — pivot from ZIP conversion to direct RAR extraction
 
 This release renames the project and changes what it does: `rar2zip`

@@ -13,17 +13,18 @@ import (
 	"github.com/ongtungduong/macrarcli/internal/rarutil"
 )
 
-// runList previews each input archive read-only (no output is written) and
-// reports the result as a human table or, with --json, a structured
-// document. -o/--dest and the overwrite-policy flags are rejected upstream in
-// validateArgs since --list writes nothing. The entry-count cap bounds each
-// listing. Returns the aggregate exit code per the 5-code scheme.
-func runList(inputs []string, password string, maxEntries int, jsonOut bool) int {
-	opts := rarutil.Options{Password: password, MaxEntries: maxEntries}
-	archives := make([]listedArchive, 0, len(inputs))
-	for _, src := range inputs {
-		entries, err := rarutil.List(src, opts)
-		archives = append(archives, listedArchive{Src: src, Entries: entries, Err: err})
+// runList previews each input archive read-only (no output is written), up
+// to maxParallel concurrently, and reports the result as a human table or,
+// with --json, a structured document. -o/--dest and the overwrite-policy
+// flags are rejected upstream in validateArgs since --list writes nothing.
+// opts is the same rarutil.Options every mode builds (Password, MaxEntries,
+// and any future field) so --list never has to hand-plumb its own subset.
+// Returns the aggregate exit code per the 5-code scheme.
+func runList(inputs []string, opts rarutil.Options, maxParallel int, jsonOut bool) int {
+	results := rarutil.ListBatch(inputs, opts, maxParallel)
+	archives := make([]listedArchive, len(results))
+	for i, r := range results {
+		archives[i] = listedArchive{Src: r.Src, Entries: r.Entries, Err: r.Err}
 	}
 
 	if jsonOut {

@@ -32,7 +32,7 @@ Target ~80–150 lines per file; hard limit ~200 for `internal/rarutil/*.go`.
 ### Functions & Methods
 
 - **Exported** (public API): `PascalCase`
-  - `Extract()`, `List()`, `Test()`, `RunBatch()` — operations users/tests call
+  - `Extract()`, `List()`, `Test()`, `RunBatch()`, `TestBatch()`, `ListBatch()` — operations users/tests call
 - **Unexported** (internal): `camelCase`
   - `sanitize()`, `safeMode()`, `commitStaged()`, `extractToStaging()`
 

@@ -178,7 +178,10 @@ func renameOrCopy(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+	// noFollowFlag (O_NOFOLLOW on unix) closes a TOCTOU window: without it, a
+	// symlink planted at dst between the caller's existence check and this
+	// open would be written through instead of rejected.
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|noFollowFlag, fi.Mode().Perm())
 	if err != nil {
 		return err
 	}
