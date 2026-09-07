@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest Release**: 0.3.0 (2026-09-07) — macrarcli pivot release  
+**Latest Release**: 0.4.0 (2026-09-07) — security hardening + CLI concurrency unification  
 **Maturity**: Stable and feature-complete for direct RAR extraction  
 **Active Development**: Paused; driven by user feedback and platform support requests
 
@@ -62,6 +62,13 @@ All core extraction features are implemented:
 - Code standards and conventions
 - TROUBLESHOOTING guide
 - Security threat model documentation
+
+### Phase 6: Security Hardening & Concurrency Unification ✅
+- Decompression-bomb caps default to bounded values (`20G`/`200000`) instead of unlimited
+- Extracted file permission bits capped to prevent group/other-writable output
+- `$MACRARCLI_PASSWORD` env var fallback for scripted use (avoids argv exposure)
+- Cross-filesystem rename fallback hardened against symlink TOCTOU
+- List/test modes honor `--jobs` for concurrent batch processing
 
 ## Unreleased Work
 

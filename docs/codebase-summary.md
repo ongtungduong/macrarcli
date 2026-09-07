@@ -24,17 +24,19 @@ The CLI layer handles flags, batch orchestration, and output formatting. The eng
 
 | File | Purpose | ~LOC |
 |------|---------|------|
-| `main.go` | Entry point, flag parsing, mode selection, password resolution, batch dispatch | ~220 |
-| `cli_args.go` | Argument validation, mode/overwrite policy enforcement, size parsing | ~130 |
-| `json_output.go` | JSON formatting for results and listings | ~60 |
-| `list_output.go` | Table formatting for archive listings | ~50 |
+| `main.go` | Entry point, flag parsing, mode selection, password resolution, batch dispatch, progress tracking | ~360 |
+| `cli_args.go` | Argument validation, mode/overwrite policy enforcement, size parsing | ~140 |
+| `json_output.go` | JSON formatting for results and listings | ~70 |
+| `list_output.go` | Human table formatting and JSON output for archive listings | ~200 |
 
 **Key Functions**
-- `run()` — orchestrates mode dispatch and error aggregation
+- `run()` — main CLI orchestrator, flag parsing, mode dispatch, error aggregation
 - `resolveMode()` — enforces -e/-l/-t mutual exclusion
 - `resolveOverwritePolicy()` — enforces overwrite flag mutual exclusion
 - `parseSize()` — parses `--max-size` with K/M/G suffixes
-- `attachProgress()` — wires live progress display for single-archive runs
+- `attachProgress()` — pre-pass List() and wires live percentage/throughput display for single-archive human output
+- `reportHuman()` — formats per-job outcomes and batch summary for human output
+- `report()`, `reportJSON()`, `reportTestJSON()` — format results per output mode
 
 ### `internal/rarutil` Package
 
@@ -51,11 +53,12 @@ The CLI layer handles flags, batch orchestration, and output formatting. The eng
 | `list.go` | `List()` — read-only header iteration with bomb-cap bounding | ~80 |
 | `test.go` | `Test()` — checksum-only validation without writes | ~70 |
 | `writer.go` | `cappedWriter` — stream decompression enforcement; respects `--max-size` | ~130 |
-| `sanitize.go` | `sanitize()` (Zip-Slip defense), `safeMode()` (permission hardening) | ~50 |
+| `sanitize.go` | `sanitize()` (Zip-Slip defense), `safeMode()` (permission hardening) | ~55 |
 | `password.go` | `ResolvePassword()`, `ResolvePasswordStdin()` — TTY prompt or flag | ~60 |
 | `progress.go` | `ProgressTracker` — live throughput/percentage calculation | ~60 |
 | `batch.go` | `RunBatch()`, `TestBatch()`, `ListBatch()` — bounded concurrency, continue-on-error, ordered results | ~86 |
 | `overwrite.go` | `OverwritePolicy` enum + enforcement (fail/overwrite/skip/rename) | ~80 |
+| `nofollow_unix.go`, `nofollow_other.go` | Platform-specific symlink defense: Unix uses `O_NOFOLLOW` flag, Windows no-op | ~10 |
 
 #### Shared Types & Constants
 
@@ -200,4 +203,4 @@ Must be preserved in any change to `sanitize.go`, `writer.go`, `stage.go`:
 - **Module**: `github.com/ongtungduong/macrarcli`
 - **Go version**: 1.26.2
 - **Binary name**: `macrarcli`
-- **Latest version**: 0.3.0 (2026-09-07)
+- **Latest version**: 0.4.0 (2026-09-07)

@@ -79,19 +79,19 @@ macrarcli solves this with a pure-Go CLI, zero runtime dependencies, and explici
 | Flat extraction (-e/--flat) | ✅ | Extract without subdirectories |
 | Archive preview (-l/--list) | ✅ | Read-only, shows sizes + encryption status |
 | Integrity validation (-t/--test) | ✅ | Checksum validation without writes |
-| Password support | ✅ | TTY prompt or `--password` flag |
+| Password support | ✅ | `--password` flag, `$MACRARCLI_PASSWORD` env fallback, or TTY prompt |
 | Multi-volume handling | ✅ | Auto-follows `.part1.rar` chains |
 | Batch processing | ✅ | Concurrent via `--jobs` (default 4) |
 | Overwrite policies | ✅ | fail (default), overwrite, skip, rename |
-| Decompression-bomb caps | ✅ | `--max-size`, `--max-entries` |
+| Decompression-bomb caps | ✅ | `--max-size` (default 20G), `--max-entries` (default 200000) |
 | JSON output | ✅ | For automation and tooling |
 | Release signing | ✅ | Keyless cosign for checksums |
 | Windows support | ⚠️ | Experimental (build + vet only in CI) |
 
 ## Version & Timeline
 
-**Current Version**: 0.3.0 (2026-09-07) — macrarcli pivot release  
-**Previous**: 0.2.1 (2026-06-18) — rar2zip (RAR-to-ZIP converter)  
+**Current Version**: 0.4.0 (2026-09-07) — security hardening + CLI concurrency unification  
+**Previous**: 0.3.0 (2026-09-07) — macrarcli pivot release  
 **Maturity**: Stable for production use on native path
 
 ## Roadmap Status
