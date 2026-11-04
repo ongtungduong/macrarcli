@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+func newTestFsEmitter(t *testing.T, root string, lim limits, onEntry func(string)) *fsEmitter {
+	t.Helper()
+	e := newFsEmitter(root, lim, onEntry)
+	if e.rootErr != nil {
+		t.Fatal(e.rootErr)
+	}
+	t.Cleanup(func() {
+		if err := e.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return e
+}
+
 func TestDedupVariant(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"f.txt", "f (1).txt"},
@@ -27,7 +41,7 @@ func TestDedupVariant(t *testing.T) {
 // dropped — guarding against silent data loss on legitimate repeats.
 func TestFsEmitter_RenamesExactDuplicate(t *testing.T) {
 	root := t.TempDir()
-	em := newFsEmitter(root, limits{}, nil)
+	em := newTestFsEmitter(t, root, limits{}, nil)
 
 	if err := em.emitFile("dup.txt", "dup.txt", 0o644, time.Time{}, strings.NewReader("first")); err != nil {
 		t.Fatalf("first emit: %v", err)
@@ -50,7 +64,7 @@ func TestFsEmitter_RenamesExactDuplicate(t *testing.T) {
 // collision) are rejected outright.
 func TestFsEmitter_RejectsPostSanitizeCollision(t *testing.T) {
 	root := t.TempDir()
-	em := newFsEmitter(root, limits{}, nil)
+	em := newTestFsEmitter(t, root, limits{}, nil)
 
 	if err := em.emitFile("b", "b", 0o644, time.Time{}, strings.NewReader("x")); err != nil {
 		t.Fatalf("first emit: %v", err)
@@ -62,11 +76,10 @@ func TestFsEmitter_RejectsPostSanitizeCollision(t *testing.T) {
 	}
 }
 
-// A file "b" and a directory "b" produce distinct staging paths ("b" vs "b/"
-// as dedup keys, "b" vs the "b" directory on disk) and must not collide.
-func TestFsEmitter_FileAndDirSameBaseCoexist(t *testing.T) {
+// An explicit directory can contain later file entries.
+func TestFsEmitter_DirectoryContainsFile(t *testing.T) {
 	root := t.TempDir()
-	em := newFsEmitter(root, limits{}, nil)
+	em := newTestFsEmitter(t, root, limits{}, nil)
 
 	if err := em.emitDir("b", "b"); err != nil {
 		t.Fatalf("dir emit: %v", err)
@@ -82,7 +95,7 @@ func TestFsEmitter_FileAndDirSameBaseCoexist(t *testing.T) {
 
 func TestFsEmitter_ByteCapErrors(t *testing.T) {
 	root := t.TempDir()
-	em := newFsEmitter(root, limits{maxBytes: 4}, nil)
+	em := newTestFsEmitter(t, root, limits{maxBytes: 4}, nil)
 
 	err := em.emitFile("big.txt", "big.txt", 0o644, time.Time{}, strings.NewReader("0123456789"))
 	if !errors.Is(err, errLimitBytes) {
@@ -92,7 +105,7 @@ func TestFsEmitter_ByteCapErrors(t *testing.T) {
 
 func TestFsEmitter_EntryCapErrors(t *testing.T) {
 	root := t.TempDir()
-	em := newFsEmitter(root, limits{maxEntries: 1}, nil)
+	em := newTestFsEmitter(t, root, limits{maxEntries: 1}, nil)
 
 	if err := em.emitFile("a.txt", "a.txt", 0o644, time.Time{}, strings.NewReader("x")); err != nil {
 		t.Fatalf("first emit: %v", err)
@@ -108,7 +121,7 @@ func TestFsEmitter_EntryCapErrors(t *testing.T) {
 // capability this phase adds over the old zip-header-only preservation.
 func TestFsEmitter_PreservesModeAndMtime(t *testing.T) {
 	root := t.TempDir()
-	em := newFsEmitter(root, limits{}, nil)
+	em := newTestFsEmitter(t, root, limits{}, nil)
 
 	want := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
 	if err := em.emitFile("exe", "exe", 0o750, want, strings.NewReader("bin")); err != nil {
@@ -131,7 +144,7 @@ func TestFsEmitter_PreservesModeAndMtime(t *testing.T) {
 func TestFsEmitter_OnEntryFiresOncePerEntry(t *testing.T) {
 	root := t.TempDir()
 	var seen []string
-	em := newFsEmitter(root, limits{}, func(name string) { seen = append(seen, name) })
+	em := newTestFsEmitter(t, root, limits{}, func(name string) { seen = append(seen, name) })
 
 	if err := em.emitDir("d", "d"); err != nil {
 		t.Fatal(err)

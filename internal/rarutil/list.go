@@ -30,8 +30,8 @@ type ListResult struct {
 
 // headerReader is the minimal slice of *rardecode.ReadCloser the lister needs:
 // the per-entry iteration core, shared in spirit with Convert. Defining it as an
-// interface lets the cap and field-mapping logic be tested without a RAR fixture
-// (the format is proprietary and cannot be generated programmatically).
+// interface lets the cap and field-mapping logic be tested independently of
+// the decoder.
 type headerReader interface {
 	Next() (*rardecode.FileHeader, error)
 }
@@ -72,13 +72,14 @@ func listEntries(rr headerReader, maxEntries int) ([]EntryInfo, error) {
 	return entries, nil
 }
 
-// List opens srcRar read-only and returns its entries without writing anything.
-// It honors Password (for encrypted headers) and MaxEntries. Listing uses the
-// pure-Go decoder only; there is no fallback shell-out (a preview never extracts).
+// List opens srcRar read-only and returns its headers without writing files.
+// It honors Password, MaxDictionaryBytes and MaxEntries. MaxTotalBytes applies
+// to Extract/Test only: advancing solid archives can decompress internally in
+// rardecode.Next. Listing is not a CPU/time-bounded operation.
 func List(srcRar string, opts Options) ([]EntryInfo, error) {
-	var ropts []rardecode.Option
-	if opts.Password != "" {
-		ropts = append(ropts, rardecode.Password(opts.Password))
+	ropts, err := opts.readerOptions()
+	if err != nil {
+		return nil, err
 	}
 	rr, err := rardecode.OpenReader(srcRar, ropts...)
 	if err != nil {

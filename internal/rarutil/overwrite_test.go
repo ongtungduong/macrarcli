@@ -36,7 +36,7 @@ func TestCommitStaged_FailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "a.txt", "new")
 	writeStagingFile(t, stagingDir, "b.txt", "new-b")
 
@@ -58,7 +58,7 @@ func TestCommitStaged_Overwrite(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destDir, "a.txt"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "a.txt", "new")
 
 	if _, err := commitStaged(stagingDir, destDir, Options{OverwritePolicy: OverwriteOverwrite}); err != nil {
@@ -83,7 +83,7 @@ func TestCommitStaged_OverwriteSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "a.txt", "new-content")
 
 	if _, err := commitStaged(stagingDir, destDir, Options{OverwritePolicy: OverwriteOverwrite}); err != nil {
@@ -111,7 +111,7 @@ func TestCommitStaged_Skip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destDir, "a.txt"), []byte("existing"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "a.txt", "new")
 	writeStagingFile(t, stagingDir, "b.txt", "new-b")
 
@@ -137,7 +137,7 @@ func TestCommitStaged_Rename(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destDir, "a.txt"), []byte("existing"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "a.txt", "new")
 
 	if _, err := commitStaged(stagingDir, destDir, Options{OverwritePolicy: OverwriteRename}); err != nil {
@@ -166,7 +166,7 @@ func TestCommitStaged_RenameDoubleCollision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destDir, "a (1).txt"), []byte("disk-variant-1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "a.txt", "staged-new")
 
 	if _, err := commitStaged(stagingDir, destDir, Options{OverwritePolicy: OverwriteRename}); err != nil {
@@ -198,7 +198,7 @@ func TestCommitStaged_RefusesSymlinkedDirectoryInPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "shared/payload.txt", "malicious")
 
 	if _, err := commitStaged(stagingDir, destDir, Options{}); err == nil {
@@ -226,7 +226,7 @@ func TestCommitStaged_PreExistingDirUntouchedOnRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingDir, "shared/a.txt", "new")
 
 	if _, err := commitStaged(stagingDir, destDir, Options{}); err == nil {

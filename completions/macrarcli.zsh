@@ -17,6 +17,7 @@ _macrarcli() {
     '--jobs[number of archives to process concurrently]:jobs:' \
     '--json[emit a machine-readable JSON summary on stdout]' \
     '--max-size[cap total uncompressed size (e.g. 10M, 2G)]:size:' \
+    '--max-dict[cap decoder dictionary bytes (default 256MiB; positive K/M/G size)]:size:' \
     '--max-entries[cap number of entries per archive]:count:' \
     '--verbose[print extra diagnostics to stderr]' \
     '--version[print version and exit]' \

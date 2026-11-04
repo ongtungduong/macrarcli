@@ -278,9 +278,9 @@ func digestDir(t *testing.T, root string) (files map[string]string, dirs map[str
 func TestCommitStaged_ConcurrentJobsSharedDestDir(t *testing.T) {
 	destDir := t.TempDir()
 
-	stagingA := t.TempDir()
+	stagingA := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingA, "from-a.txt", "content-a")
-	stagingB := t.TempDir()
+	stagingB := testStagingDir(t, destDir)
 	writeStagingFile(t, stagingB, "from-b.txt", "content-b")
 
 	done := make(chan error, 2)

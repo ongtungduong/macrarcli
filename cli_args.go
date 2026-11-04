@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -71,7 +72,7 @@ func resolveOverwritePolicy(overwrite, skip, rename bool) (policy rarutil.Overwr
 // It runs before any archive is opened.
 func validateArgs(inputs []string, mode cliMode, dest string, overwriteSet bool, jobs int) int {
 	usage := func(format string, a ...any) int {
-		fmt.Fprintf(os.Stderr, "macrarcli: "+format+"\n", a...)
+		fmt.Fprintf(os.Stderr, "macrarcli: %s\n", displaySafe(fmt.Sprintf(format, a...)))
 		return 1
 	}
 	if len(inputs) == 0 {
@@ -133,5 +134,20 @@ func parseSize(s string) (int64, error) {
 	if n < 0 {
 		return 0, fmt.Errorf("must be >= 0")
 	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("byte size overflows int64")
+	}
 	return n * mult, nil
+}
+
+// Zero means the backend default, so it is deliberately not a CLI override.
+func parseDictionarySize(s string) (int64, error) {
+	n, err := parseSize(s)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("must be > 0")
+	}
+	return n, nil
 }

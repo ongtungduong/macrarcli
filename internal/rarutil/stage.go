@@ -1,28 +1,20 @@
 package rarutil
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"strings"
 	"sync"
 )
 
-// commitMu serializes the commit step across every concurrent batch job so
-// two jobs writing into the same destDir never interleave their
-// check-then-rename pairs. The critical section is a fast walk+rename, not a
-// slow decompression, so global serialization here is cheap — a per-destDir
-// lock would be a premature optimization for this tool's typical batch sizes.
+// Commit serialization protects jobs in this process. Root-relative operations
+// also prevent a concurrent symlink swap from escaping the destination tree.
 var commitMu sync.Mutex
 
-// makeStagingDir creates a private staging directory inside destDir (creating
-// destDir itself if needed) so the later commit's per-entry os.Rename is an
-// O(1) same-filesystem move, not a byte copy. The staging dir is hidden
-// (dot-prefixed) and uniquely named so concurrent batch jobs targeting the
-// same destDir never collide.
 func makeStagingDir(destDir string) (string, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", fmt.Errorf("create destination %q: %w", destDir, err)
@@ -34,163 +26,144 @@ func makeStagingDir(destDir string) (string, error) {
 	return dir, nil
 }
 
-// commitEntry is one file successfully moved from staging into destDir during
-// a commit walk, kept only so a later failure in the same walk can reverse it.
-type commitEntry struct {
-	stagingPath string
-	destPath    string
+func makeRootTempDir(root *os.Root, prefix string) (string, error) {
+	for {
+		name := prefix + rand.Text()
+		if err := root.Mkdir(name, 0o700); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return "", err
+		}
+		return name, nil
+	}
 }
 
-// commitStaged moves every entry from stagingDir into destDir, applying opts'
-// overwrite policy per file. On success it returns the list of archive-
-// relative paths that were skipped under OverwriteSkip. On failure, every
-// entry already committed in this walk is moved back into stagingDir and any
-// directory this commit created is removed before the error is returned, so
-// destDir ends up exactly as it was before the call. The caller is
-// responsible for os.RemoveAll(stagingDir) afterward either way.
-func commitStaged(stagingDir, destDir string, opts Options) (skipped []string, err error) {
+// commitStaged requires staging directly under destDir, as makeStagingDir
+// guarantees. Originals replaced by --overwrite stay in a private backup
+// directory until success. Failed restoration preserves that directory and
+// returns its location, rather than deleting the only remaining original.
+func commitStaged(stagingDir, destDir string, opts Options) ([]string, error) {
+	root, err := os.OpenRoot(destDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	rel, err := filepath.Rel(destDir, stagingDir)
+	if err != nil || rel == "." || filepath.Base(rel) != rel || !filepath.IsLocal(rel) {
+		return nil, fmt.Errorf("staging must be directly inside destination")
+	}
+	return commitRoot(root, rel, opts)
+}
+
+func commitRoot(root *os.Root, staging string, opts Options) ([]string, error) {
+	stage, err := root.OpenRoot(staging)
+	if err != nil {
+		return nil, err
+	}
+	defer stage.Close()
+	return commitPinned(root, staging, stage, opts)
+}
+
+func commitPinned(root *os.Root, staging string, stage *os.Root, opts Options) ([]string, error) {
 	commitMu.Lock()
 	defer commitMu.Unlock()
-
-	committed := map[string]bool{}
-	createdDirs := map[string]bool{} // destPath -> true if THIS commit created it
-	var done []commitEntry
-
-	walkErr := filepath.WalkDir(stagingDir, func(p string, d fs.DirEntry, walkErr error) error {
+	expected, err := stage.Stat(".")
+	if err != nil {
+		return nil, err
+	}
+	current, err := root.Lstat(staging)
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(current, expected) {
+		return nil, fmt.Errorf("staging path changed concurrently")
+	}
+	tx := &commitTransaction{root: root}
+	defer tx.close()
+	resolver := newOverwriteResolver(root.Lstat)
+	var skipped []string
+	walkErr := fs.WalkDir(stage.FS(), ".", func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if p == stagingDir {
+		if p == "." {
 			return nil
 		}
-		rel, relErr := filepath.Rel(stagingDir, p)
-		if relErr != nil {
-			return relErr
+		rel := filepath.FromSlash(p)
+		first := strings.SplitN(p, "/", 2)[0]
+		if first == staging || first == tx.backupDir {
+			return fmt.Errorf("entry conflicts with private transaction directory: %q", p)
 		}
-		destPath := filepath.Join(destDir, rel)
-
 		if d.IsDir() {
-			fi, statErr := os.Lstat(destPath)
+			fi, statErr := root.Lstat(rel)
 			switch {
 			case errors.Is(statErr, fs.ErrNotExist):
-				if mkErr := os.MkdirAll(destPath, 0o755); mkErr != nil {
-					return fmt.Errorf("create %q: %w", destPath, mkErr)
+				if err := root.Mkdir(rel, 0o755); err != nil {
+					return err
 				}
-				createdDirs[destPath] = true
+				created, err := root.Lstat(rel)
+				if err != nil {
+					return err
+				}
+				if !created.IsDir() {
+					return fmt.Errorf("created directory %q changed concurrently", rel)
+				}
+				tx.createdDirs = append(tx.createdDirs, commitDir{rel, created})
 			case statErr != nil:
-				return fmt.Errorf("stat %q: %w", destPath, statErr)
+				return statErr
 			case !fi.IsDir():
-				// destPath exists but is NOT a real directory — most
-				// dangerously, a symlink (e.g. destDir/shared -> /etc), which
-				// os.MkdirAll/os.Rename would otherwise happily follow for
-				// every entry nested under it. This is a hard safety
-				// boundary, not an overwrite preference: no OverwritePolicy
-				// value makes writing through a symlinked "directory" safe,
-				// so it is rejected unconditionally, before any nested entry
-				// is ever committed. filepath.WalkDir visits this staging
-				// directory node before any of its children, so this check
-				// runs — and can abort the whole walk — before any MkdirAll
-				// or rename could occur beneath it.
-				return fmt.Errorf("refusing to write into %q: exists and is not a directory (possible symlink)", destPath)
+				return fmt.Errorf("refusing to write into %q: exists and is not a directory (possible symlink)", rel)
 			}
-			// destPath already exists and IS a real directory: nothing to
-			// create, safe to let entries nested under it commit normally.
 			return nil
 		}
-
-		finalDest, skip, ovErr := checkOverwrite(destPath, opts.OverwritePolicy, committed)
-		if ovErr != nil {
-			return ovErr
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("staged entry is not a regular file: %q", p)
+		}
+		final, skip, err := resolver.resolve(rel, opts.OverwritePolicy)
+		if err != nil {
+			return err
 		}
 		if skip {
-			skipped = append(skipped, rel)
+			skipped = append(skipped, p)
 			return nil
 		}
-		if renameErr := renameOrCopy(p, finalDest); renameErr != nil {
-			return fmt.Errorf("commit %q: %w", rel, renameErr)
+		entry := commitEntry{dest: final}
+		if opts.OverwritePolicy == OverwriteOverwrite {
+			existing, statErr := root.Lstat(final)
+			switch {
+			case statErr == nil:
+				if !existing.Mode().IsRegular() && existing.Mode()&fs.ModeSymlink == 0 {
+					return fmt.Errorf("refusing to replace non-file %q", final)
+				}
+				entry.backup, err = tx.backupFile(final, existing)
+				if err != nil {
+					return err
+				}
+			case !errors.Is(statErr, fs.ErrNotExist):
+				return statErr
+			}
 		}
-		done = append(done, commitEntry{stagingPath: p, destPath: finalDest})
+		// Record the backup before publication; even a failed write must restore it.
+		tx.done = append(tx.done, entry)
+		published, err := publishFrom(stage, rel, root, final)
+		tx.done[len(tx.done)-1].published = published
+		if err != nil {
+			return fmt.Errorf("commit %q: %w", p, err)
+		}
 		return nil
 	})
-
 	if walkErr != nil {
-		for i := len(done) - 1; i >= 0; i-- {
-			if revErr := renameOrCopy(done[i].destPath, done[i].stagingPath); revErr != nil {
-				// Genuine reversal failure (not the benign "already gone"
-				// case since we just created it): surface it, never swallow
-				// silently — an entry may now be left behind in destDir.
-				opts.vlog("rollback: failed to move %q back to staging: %v", done[i].destPath, revErr)
-			}
+		return nil, errors.Join(walkErr, tx.rollback())
+	}
+	if tx.backupDir != "" {
+		if err := cleanupStaging(root, tx.backupDir, tx.backupRoot); err != nil {
+			return skipped, fmt.Errorf("output committed; could not remove backups at %q: %w", filepath.Join(root.Name(), tx.backupDir), err)
 		}
-		removeCreatedDirsDeepestFirst(createdDirs, opts)
-		return nil, walkErr
 	}
 	return skipped, nil
-}
-
-// removeCreatedDirsDeepestFirst removes directories this commit created, in
-// deepest-first order, via plain os.Remove (never RemoveAll). A directory
-// that has since gained unrelated content (e.g. a sibling entry's file still
-// pending reversal, or — routinely on macOS — Finder/Spotlight metadata) is
-// expected to be non-empty and simply fails to remove: that specific case is
-// the safety property, not an error. Any OTHER removal error (permission
-// denied, I/O error) is a genuine failure and is surfaced via opts.OnVerbose
-// rather than swallowed uniformly.
-func removeCreatedDirsDeepestFirst(createdDirs map[string]bool, opts Options) {
-	dirs := make([]string, 0, len(createdDirs))
-	for d := range createdDirs {
-		dirs = append(dirs, d)
-	}
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, d := range dirs {
-		if err := os.Remove(d); err != nil {
-			// os.Remove doesn't expose a portable "directory not empty" error
-			// value, so distinguish it directly: if the directory genuinely
-			// still has content (a sibling entry pending reversal, or —
-			// routinely on macOS — Finder/Spotlight metadata), that's the
-			// expected, benign case. Anything else (permission denied, I/O
-			// error) is a real failure and gets surfaced.
-			if entries, readErr := os.ReadDir(d); readErr != nil || len(entries) == 0 {
-				opts.vlog("rollback: failed to remove created directory %q: %v", d, err)
-			}
-		}
-	}
-}
-
-// renameOrCopy moves src to dst, preferring an O(1) same-filesystem rename and
-// falling back to copy+remove when that fails (e.g. dst crosses a filesystem
-// boundary from src — rare, since makeStagingDir places staging next to
-// destDir specifically to avoid this, but handled uniformly rather than left
-// to fail outright).
-func renameOrCopy(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	fi, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	// noFollowFlag (O_NOFOLLOW on unix) closes a TOCTOU window: without it, a
-	// symlink planted at dst between the caller's existence check and this
-	// open would be written through instead of rejected.
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|noFollowFlag, fi.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Remove(src)
 }

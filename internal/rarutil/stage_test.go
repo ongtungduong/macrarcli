@@ -43,7 +43,7 @@ func TestCommitStaged_NestedDirRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stagingDir := t.TempDir()
+	stagingDir := testStagingDir(t, destDir)
 	// Lexically "deep/..." sorts before "zzz-conflict.txt", so WalkDir visits
 	// (and successfully commits) the nested entry — creating "deep/",
 	// "deep/nested/", and "deep/nested/path/" along the way — before it
@@ -87,4 +87,14 @@ func snapshotTree(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func testStagingDir(t *testing.T, dest string) string {
+	t.Helper()
+	staging, err := makeStagingDir(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(staging) })
+	return staging
 }

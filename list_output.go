@@ -33,7 +33,7 @@ func runList(inputs []string, opts rarutil.Options, maxParallel int, jsonOut boo
 	printList(os.Stdout, archives)
 	for _, a := range archives {
 		if a.Err != nil {
-			fmt.Fprintf(os.Stderr, "macrarcli: %s: %v\n", a.Src, a.Err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %s: %s\n", displaySafe(a.Src), displaySafe(a.Err.Error()))
 		}
 	}
 	return aggregateExit(listExitCodes(archives))
@@ -76,7 +76,7 @@ func printList(w io.Writer, archives []listedArchive) {
 			if printed {
 				fmt.Fprintln(w)
 			}
-			fmt.Fprintf(w, "%s:\n", a.Src)
+			fmt.Fprintf(w, "%s:\n", displaySafe(a.Src))
 		}
 		printed = true
 

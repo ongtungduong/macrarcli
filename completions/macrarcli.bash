@@ -7,7 +7,7 @@ _macrarcli() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     flags="-o --dest -e --flat -l --list -t --test \
 --overwrite --skip --rename -q --quiet --password \
---jobs --json --max-size --max-entries --verbose \
+--jobs --json --max-size --max-dict --max-entries --verbose \
 --version -h --help"
 
     if [[ "$cur" == -* ]]; then

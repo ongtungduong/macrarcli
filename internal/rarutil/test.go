@@ -30,8 +30,6 @@ type entryReader interface {
 func testEntries(rr entryReader, lim limits, onEntry func(string)) error {
 	var total int64
 	var count int
-	bufp := copyBufPool.Get().(*[]byte)
-	defer copyBufPool.Put(bufp)
 
 	for {
 		hdr, err := rr.Next()
@@ -52,7 +50,7 @@ func testEntries(rr entryReader, lim limits, onEntry func(string)) error {
 			continue
 		}
 		w := &cappedWriter{w: io.Discard, total: &total, limit: lim.maxBytes}
-		if _, err := io.CopyBuffer(w, rr, *bufp); err != nil {
+		if _, err := io.Copy(w, rr); err != nil {
 			return fmt.Errorf("test rar entry %q: %w", hdr.Name, err)
 		}
 		if onEntry != nil {
@@ -76,9 +74,9 @@ func testEntries(rr entryReader, lim limits, onEntry func(string)) error {
 // password on a RAR3/4 archive decrypts to garbage that fails this same
 // checksum check — it is not reliably distinguishable from real corruption.
 func Test(srcRar string, opts Options) error {
-	var ropts []rardecode.Option
-	if opts.Password != "" {
-		ropts = append(ropts, rardecode.Password(opts.Password))
+	ropts, err := opts.readerOptions()
+	if err != nil {
+		return err
 	}
 	rr, err := rardecode.OpenReader(srcRar, ropts...)
 	if err != nil {

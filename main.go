@@ -13,6 +13,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"runtime"
 
@@ -28,7 +30,7 @@ var (
 
 // maxDefaultJobs caps the batch concurrency default. RAR decode is largely
 // I/O-bound, so fanning out past a handful of workers mostly adds disk
-// contention and memory (one pooled copy buffer per in-flight job) for no gain.
+// contention and decoder memory for no gain.
 const maxDefaultJobs = 4
 
 // passwordEnvVar is the environment-variable fallback for --password, so
@@ -81,12 +83,14 @@ func run(args []string) int {
 		jsonOut     bool
 		showVersion bool
 		maxSize     string
+		maxDict     string
 		maxEntries  int
 		verbose     bool
 	)
 
 	fs := flag.NewFlagSet("macrarcli", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	// flag's diagnostics can contain raw user input. Render errors ourselves.
+	fs.SetOutput(io.Discard)
 	fs.StringVar(&dest, "o", "", "destination directory for extracted files (default: cwd)")
 	fs.StringVar(&dest, "dest", "", "destination directory for extracted files (default: cwd)")
 	fs.BoolVar(&flatMode, "e", false, "extract without preserving directory structure")
@@ -104,6 +108,7 @@ func run(args []string) int {
 	fs.IntVar(&jobs, "jobs", defaultJobs(), "number of archives to process concurrently (default: min(NumCPU,4))")
 	fs.BoolVar(&jsonOut, "json", false, "emit a machine-readable JSON summary on stdout")
 	fs.StringVar(&maxSize, "max-size", defaultMaxSize, "cap total uncompressed size (default 20G; 0 = unlimited; accepts K/M/G suffix)")
+	fs.StringVar(&maxDict, "max-dict", fmt.Sprint(rarutil.DefaultMaxDictionaryBytes), "cap decoder dictionary bytes (default 256MiB; must be positive; accepts K/M/G suffix)")
 	fs.IntVar(&maxEntries, "max-entries", defaultMaxEntries, "cap number of entries per archive (default 200000; 0 = unlimited)")
 	fs.BoolVar(&verbose, "verbose", false, "print extra diagnostics (decode path, per-archive timing) to stderr")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -115,29 +120,32 @@ func run(args []string) int {
 			"encrypted archives: a wrong password on a legacy RAR3/4 archive is not\n"+
 			"reliably distinguishable from corruption and may report exit 3 instead.\n\n"+
 			"flags:\n")
+		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
+		fs.SetOutput(io.Discard)
 	}
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp { // -h / --help
 			return 0
 		}
+		fmt.Fprintf(os.Stderr, "macrarcli: %s\n", displaySafe(err.Error()))
 		return 1
 	}
 
 	if showVersion {
-		fmt.Printf("macrarcli v%s (%s)\n", version, commit)
+		fmt.Printf("macrarcli v%s (%s)\n", displaySafe(version), displaySafe(commit))
 		return 0
 	}
 
 	mode, err := resolveMode(flatMode, listMode, testMode)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
+		fmt.Fprintf(os.Stderr, "macrarcli: %s\n", displaySafe(err.Error()))
 		return 1
 	}
 	overwritePolicy, overwriteSet, err := resolveOverwritePolicy(overwrite, skip, rename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
+		fmt.Fprintf(os.Stderr, "macrarcli: %s\n", displaySafe(err.Error()))
 		return 1
 	}
 
@@ -148,7 +156,12 @@ func run(args []string) int {
 
 	maxBytes, err := parseSize(maxSize)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "macrarcli: invalid --max-size %q: %v\n", maxSize, err)
+		fmt.Fprintf(os.Stderr, "macrarcli: invalid --max-size %q: %s\n", displaySafe(maxSize), displaySafe(err.Error()))
+		return 1
+	}
+	maxDictionaryBytes, err := parseDictionarySize(maxDict)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "macrarcli: invalid --max-dict %q: %s\n", displaySafe(maxDict), displaySafe(err.Error()))
 		return 1
 	}
 	if maxEntries < 0 {
@@ -164,29 +177,28 @@ func run(args []string) int {
 	// scripted use that would otherwise expose the secret via argv.
 	password = resolveExplicitPassword(password, os.Getenv)
 	headerEncrypted := false
-	if password == "" && len(inputs) > 0 {
-		if _, openErr := rardecode.OpenReader(inputs[0]); errors.Is(openErr, rardecode.ErrArchiveEncrypted) {
-			headerEncrypted = true
-		}
+	if password == "" {
+		headerEncrypted = probeEncryptedHeaders(inputs, func(src string) (io.Closer, error) {
+			return rardecode.OpenReader(src, rardecode.MaxDictionarySize(maxDictionaryBytes))
+		})
 	}
 	resolvedPassword, err := rarutil.ResolvePasswordStdin(password, headerEncrypted)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
+		fmt.Fprintf(os.Stderr, "macrarcli: %s\n", displaySafe(err.Error()))
 		return 2
 	}
 
 	opts := rarutil.Options{
-		Password:        resolvedPassword,
-		OverwritePolicy: overwritePolicy,
-		MaxTotalBytes:   maxBytes,
-		MaxEntries:      maxEntries,
-		Flat:            mode == modeFlat,
+		Password:           resolvedPassword,
+		OverwritePolicy:    overwritePolicy,
+		MaxTotalBytes:      maxBytes,
+		MaxDictionaryBytes: maxDictionaryBytes,
+		MaxEntries:         maxEntries,
+		Flat:               mode == modeFlat,
 	}
 	// Verbose diagnostics go to stderr, and only when stdout isn't owned by --json.
 	if verbose && !jsonOut {
-		opts.OnVerbose = func(msg string) {
-			fmt.Fprintf(os.Stderr, "[verbose] %s\n", msg)
-		}
+		opts.OnVerbose = func(msg string) { printVerbose(os.Stderr, msg) }
 	}
 	// --json owns stdout for machine output, so silence the human decoration.
 	human := !quiet && !jsonOut
@@ -209,7 +221,7 @@ func run(args []string) int {
 			dest = "."
 		}
 		if err := os.MkdirAll(dest, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "macrarcli: %v\n", err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %s\n", displaySafe(err.Error()))
 			return 4
 		}
 		jobList := make([]rarutil.Job, len(inputs))
@@ -236,18 +248,67 @@ func attachProgress(opts *rarutil.Options, src string) {
 	if err != nil {
 		return
 	}
-	sizeByName := make(map[string]int64, len(entries))
-	var total int64
-	for _, e := range entries {
-		if e.Size > 0 {
-			sizeByName[e.Name] = e.Size
-			total += e.Size
+	opts.OnEntry = progressCallback(entries, opts.Flat, os.Stderr)
+}
+
+// probeEncryptedHeaders visits every input before prompting once for the batch.
+// Close successful probes immediately, not at the end of a potentially huge
+// batch. Other open/close errors belong to the real operation's reporting path.
+func probeEncryptedHeaders(inputs []string, open func(string) (io.Closer, error)) bool {
+	encrypted := false
+	for _, src := range inputs {
+		r, err := open(src)
+		if err == nil {
+			_ = r.Close()
+		}
+		if errors.Is(err, rardecode.ErrArchiveEncrypted) {
+			encrypted = true
 		}
 	}
-	tracker := rarutil.NewProgressTracker(total, len(entries))
-	opts.OnEntry = func(name string) {
-		tracker.OnEntry(sizeByName[name])
-		fmt.Fprintf(os.Stderr, "\r\033[K[%3.0f%%] %s (%s/s)", tracker.Percent(), name, humanRate(tracker.ThroughputBPS()))
+	return encrypted
+}
+
+func printVerbose(w io.Writer, msg string) {
+	fmt.Fprintf(w, "[verbose] %s\n", displaySafe(msg))
+}
+
+// Callbacks follow archive order even when names are sanitized, flattened, or
+// deduplicated. Flat extraction emits no directory callbacks. Unknown sizes or
+// an overflowing total use entry counts rather than a misleading byte percent.
+func progressCallback(entries []rarutil.EntryInfo, flat bool, w io.Writer) func(string) {
+	sizes := make([]int64, 0, len(entries))
+	var total int64
+	countOnly := false
+	for _, e := range entries {
+		if flat && e.IsDir {
+			continue
+		}
+		size := e.Size
+		if e.IsDir {
+			size = 0
+		}
+		sizes = append(sizes, size)
+		if size < 0 || size > math.MaxInt64-total {
+			countOnly = true
+		} else {
+			total += size
+		}
+	}
+	countOnly = countOnly || total == 0
+	tracker := rarutil.NewProgressTracker(total, len(sizes))
+	next := 0
+	return func(name string) {
+		if next >= len(sizes) {
+			return
+		}
+		size := sizes[next]
+		next++
+		if countOnly {
+			fmt.Fprintf(w, "\r\033[K[%3.0f%%] %s", float64(next)/float64(len(sizes))*100, displaySafe(name))
+			return
+		}
+		tracker.OnEntry(size)
+		fmt.Fprintf(w, "\r\033[K[%3.0f%%] %s (%s/s)", tracker.Percent(), displaySafe(name), humanRate(tracker.ThroughputBPS()))
 	}
 }
 
@@ -313,15 +374,15 @@ func reportHuman(results []rarutil.Result, quiet, showPartial, quietGatesSuccess
 		switch {
 		case r.Err != nil:
 			failed++
-			fmt.Fprintf(os.Stderr, "macrarcli: %s: %v\n", r.Src, r.Err)
+			fmt.Fprintf(os.Stderr, "macrarcli: %s: %s\n", displaySafe(r.Src), displaySafe(r.Err.Error()))
 		case len(r.SkippedEntries) > 0:
 			skipped++
 			if !quiet {
-				fmt.Fprintf(os.Stderr, "extracted %s (%d entries skipped)\n", r.Dst, len(r.SkippedEntries))
+				fmt.Fprintf(os.Stderr, "extracted %s (%d entries skipped)\n", displaySafe(r.Dst), len(r.SkippedEntries))
 			}
 		default:
 			if !quietGatesSuccess || !quiet {
-				fmt.Println(successLine(r))
+				fmt.Println(displaySafe(successLine(r)))
 			}
 		}
 	}
