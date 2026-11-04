@@ -61,5 +61,6 @@ Optional fixture-based integration tests skip when fixtures are absent.
 
 Runtime dependencies are `rardecode/v2`, `x/term`, and `x/sys`. Go 1.26.10 is the
 minimum toolchain, including fixes for GO-2026-4970 and GO-2026-6604. See
-`docs/project-changelog.md` for release changes. Version 0.5.0 (2026-11-04)
-contains the security and performance hardening described here.
+`docs/project-changelog.md` for release changes. Version 0.5.1 (2026-11-04)
+updates terminal/system dependencies and release tooling on top of the v0.5.0
+security and performance hardening described here.

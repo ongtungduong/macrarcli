@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest Release**: 0.5.0 (2026-11-04) — recovery safety, bounded dictionaries, and duplicate-name performance
+**Latest Release**: 0.5.1 (2026-11-04) — terminal/system dependencies and release tooling updates
 **Maturity**: Stable and feature-complete for direct RAR extraction  
 **Active Development**: Paused; driven by user feedback and platform support requests
 

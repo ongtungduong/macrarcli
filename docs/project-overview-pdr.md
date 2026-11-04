@@ -90,8 +90,8 @@ macrarcli solves this with a pure-Go CLI, zero runtime dependencies, and explici
 
 ## Version & Timeline
 
-**Current Version**: 0.5.0 (2026-11-04) — recovery safety, bounded dictionaries, and duplicate-name performance
-**Previous**: 0.4.0 (2026-09-07) — security hardening + CLI concurrency unification
+**Current Version**: 0.5.1 (2026-11-04) — terminal/system dependencies and release tooling updates
+**Previous**: 0.5.0 (2026-11-04) — recovery safety, bounded dictionaries, and duplicate-name performance
 **Maturity**: Stable for production use on native path
 
 ## Roadmap Status

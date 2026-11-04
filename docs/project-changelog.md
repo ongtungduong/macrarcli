@@ -5,6 +5,13 @@ observable output or defaults are called out explicitly.
 
 ## Unreleased
 
+## 0.5.1 — 2026-11-04
+
+### Maintenance
+- Update `golang.org/x/term` to v0.47.0 and `golang.org/x/sys` to v0.49.0.
+- Update GoReleaser Action to v7.3.0; retain the pinned GoReleaser v2.16.0 binary.
+- Keep the archive decoder pinned to `rardecode/v2` v2.2.5. Extraction behavior and CLI defaults are unchanged from v0.5.0.
+
 ## 0.5.0 — 2026-11-04
 
 ### Security and correctness
