@@ -51,9 +51,8 @@ interface seams and synthetic inputs.
 
 This tool reads untrusted archives. Preserve the hardening already in place:
 Zip-Slip / absolute-path sanitization, symlink and non-regular-mode
-neutralization, decompression-bomb caps (`--max-size` / `--max-entries`), the
-staging-directory-then-atomic-commit write path (a failure rolls back
-everything, never leaves a partial extraction in the destination), the
+neutralization, decompression-bomb caps (`--max-size` / `--max-entries` / `--max-dict`), the
+root-confined staging/publication path, recoverable overwrite backups, the
 post-sanitize name-collision guard, and `--overwrite` never following a
 symlink at the destination. If you touch the emitter, sanitizer, or
 staging/commit code, add a test proving the invariant still holds. Report

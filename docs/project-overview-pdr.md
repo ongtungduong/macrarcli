@@ -44,7 +44,7 @@ macrarcli solves this with a pure-Go CLI, zero runtime dependencies, and explici
 **Non-Functional**
 - No external runtime dependencies on native path
 - Atomic writes (temp + rename, never partial)
-- Bounded memory usage (pooled buffers per job)
+- Per-decoder dictionary cap (256 MiB default); no total-process memory guarantee
 - Hardened against Zip-Slip, path traversal, symlink/device attacks
 - Keyless code signing (Sigstore/cosign) for release authenticity
 - Cross-platform availability (Homebrew, install script, Scoop)
@@ -90,8 +90,8 @@ macrarcli solves this with a pure-Go CLI, zero runtime dependencies, and explici
 
 ## Version & Timeline
 
-**Current Version**: 0.4.0 (2026-09-07) — security hardening + CLI concurrency unification  
-**Previous**: 0.3.0 (2026-09-07) — macrarcli pivot release  
+**Current Version**: 0.5.0 (2026-11-04) — recovery safety, bounded dictionaries, and duplicate-name performance
+**Previous**: 0.4.0 (2026-09-07) — security hardening + CLI concurrency unification
 **Maturity**: Stable for production use on native path
 
 ## Roadmap Status

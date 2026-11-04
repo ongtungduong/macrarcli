@@ -1,222 +1,102 @@
 # System Architecture
 
-## Component Diagram
+## Dispatch and concurrency
 
-```
-User / CLI
-    ↓
-main.go (Flag parsing, mode selection, batch orchestration)
-    ↓
-cli_args.go (Argument validation, job building)
-    ↓
-┌─────────────────────────────────────────────┐
-│ Dispatch by Mode (-l, -t, extract, or flat) │
-└─────────────────────────────────────────────┘
-    ↙           ↓           ↓           ↘
-List()      Test()    Extract()      Extract()
-(read-only)  (r/o)     (preserve)      (flat)
-    ↓           ↓           ↓           ↓
-rardecode    rardecode   stage.go      stage.go
-(open, iter) (validate)  extract.go    extract.go
-    ↓           ↓           ↓           ↓
-    ├──→ sanitize.go (Zip-Slip defense) ←──┤
-    │   safeMode() (Permission hardening)   │
-    │   writer.go (Bomb-cap enforcement)    │
-    └────────────────────────────────────────┘
-            ↓
-    os.Rename() — atomic commit
-            ↓
-    Output formatting (JSON or human)
-            ↓
-    Exit code: 0/1/2/3/4
-```
+The CLI parses flags and validates mode/overwrite exclusions before opening
+archives. Password precedence is `--password`, `MACRARCLI_PASSWORD`, then one
+masked terminal prompt if any input has encrypted headers. Each successful
+probe closes immediately. Content-only encryption may require an explicit
+password because the header probe does not detect it.
 
-## Data Flow: Single Archive
+`ListBatch`, `TestBatch`, and `RunBatch` share a bounded semaphore dispatcher.
+They continue after per-job failures and return results in input order.
+`commitMu` serializes extraction commits within the process; decoding remains
+parallel. It is not a cross-process lock.
 
-```
-1. CLI Parsing (main.go, cli_args.go)
-   ├─ Parse flags: -o, -e, -l, -t, --password, --max-size, --jobs, etc.
-   ├─ Validate arguments (at least one input, mode exclusion, job count)
-   ├─ Resolve password once (TTY prompt if needed, before batch dispatch)
-   └─ Build Job{Src, Dst, ...}
+## Archive readers
 
-2. Mode Dispatch
-   ├─ -l (List): rarutil.List()
-   │  ├─ Open RAR read-only
-   │  ├─ Iterate headers
-   │  ├─ Apply --max-entries cap
-   │  └─ Return []EntryInfo with name, size, packed size, encrypted, modtime
-   │
-   ├─ -t (Test): rarutil.Test()
-   │  ├─ Open RAR
-   │  ├─ Iterate entries via cappedWriter (enforces --max-size)
-   │  ├─ Read to EOF to force CRC32 validation
-   │  └─ Return success or corruption error
-   │
-   └─ Extract (default, -e for flat): rarutil.Extract()
-      ├─ makeStagingDir() → create private temp directory
-      ├─ extractToStaging():
-      │  ├─ Open RAR via rardecode.OpenReader()
-      │  ├─ For each entry:
-      │  │  ├─ sanitize(name) → reject traversal/absolute paths (Zip-Slip)
-      │  │  ├─ safeMode(mode) → strip symlink/device/setuid bits
-      │  │  ├─ If Flat: name = path.Base(name)
-      │  │  └─ Stream to staging via cappedWriter (--max-size enforcement)
-      │  └─ Any error: return immediately, Extract cleans up defer
-      │
-      ├─ commitStaged():
-      │  ├─ Walk staged entries
-      │  ├─ For each: check destination collision
-      │  ├─ Per overwrite policy:
-      │  │  ├─ Fail (default): error if exists
-      │  │  ├─ Overwrite: Replace existing
-      │  │  ├─ Skip: Leave destination, track as skipped
-      │  │  └─ Rename: Keep both, suffix collider with " (n)"
-      │  ├─ os.Rename() each entry into destination (atomic per-entry)
-      │  └─ Return []string of skipped names
-      │
-      └─ defer os.RemoveAll(stagingDir) on any error
+Every backend open uses shared password/dictionary options. CLI header probes
+use the same dictionary cap. The default dictionary budget is 256 MiB per reader
+and may be raised with `--max-dict`. It is not a bound on total process memory.
 
-3. Output Formatting
-   ├─ If --json: reportJSON() or reportTestJSON() to stdout
-   ├─ If human: Print per-entry status to stdout/stderr
-   └─ Batch summary: "{N} succeeded, {M} partial, {F} failed"
+| Operation | Data handling | Limits |
+|-----------|---------------|--------|
+| List | Header iteration, no output files | Entry count and dictionary |
+| Test | Read each file to discard, surface supported checksum errors | Bytes, entries, dictionary |
+| Extract | Read into private staging, then commit | Bytes, entries, dictionary |
 
-4. Exit Code Aggregation
-   ├─ Per-job: classifyErr() → 0/1/2/3/4
-   ├─ Batch: aggregateExit() → highest priority (2 > 3 > 4)
-   └─ Return process exit code
-```
+Advancing solid archive headers can decompress internally. `List` deliberately
+keeps header iteration rather than decoding every non-solid file; `--max-size`
+does not apply there. Listing and the progress pre-pass have no CPU/time cap.
+The decoder validates supported checksums when present, not authenticity.
 
-## Batch Processing Flow
+## Filesystem boundary
 
-```
-Multiple input files (*.rar)
-    ↓
-RunBatch(jobs []Job, opts, maxParallel)
-    ├─ Create semaphore with maxParallel slots
-    ├─ For each Job (concurrently up to limit):
-    │  ├─ Acquire semaphore slot
-    │  ├─ Call Extract(job.Src, job.Dst, opts)
-    │  ├─ Store result in order (maintain input order)
-    │  └─ Release semaphore slot
-    └─ Return results []Result in input order
+`Extract` opens the destination root before creating staging. The decoder
+borrows an opened staging root; publication, rollback, and cleanup use the
+pinned destination root. Renaming the original directory path or swapping an
+intermediate path to an outside symlink cannot redirect those operations outside
+the root on supported patched Go platforms.
 
-Key properties:
-• Concurrent by default: --jobs defaults to min(NumCPU, 4)
-• Continue-on-error: failed Job doesn't abort batch
-• Deterministic output: results printed in input order, not completion order
-• Exit code: highest-priority error code wins (2 > 3 > 4)
+`sanitize` rejects escaping, absolute, drive-relative, device, stream, and
+ambiguous Windows paths. `a:b` is intentionally rejected because it is a
+Windows drive-relative path. Validation happens before flattening. List/test
+names are not used as filesystem paths.
 
-**Batch in all modes**: List (-l) and Test (-t) modes use TestBatch() and ListBatch() respectively, following the same concurrency pattern and honoring --jobs.
-```
+`safeMode` strips symlink/device and special permission bits, plus group/other
+write bits. Archive link bodies are stored as inert regular-file content.
+Files are created exclusively in staging; tracked directory spellings prevent
+case/normalization aliases from merging implicitly on insensitive filesystems.
+Permissions and modification time are applied to an open file handle, avoiding
+path-based metadata races. Linux/macOS timestamps preserve nanoseconds; Windows preserves its native 100 ns precision.
 
-## Security Invariants
+## Publication and rollback
 
-These must be preserved in any change affecting extraction:
+1. Walk the staged tree; check existing destination directories and per-file
+   overwrite policy. Refuse pre-existing symlink directories.
+2. For `--overwrite`, move the existing file or symlink itself into a private
+   `.macrarcli-backup-*` directory under the destination.
+3. Publish a completed staged file with a hard link (no byte copy). If unavailable,
+   open the destination exclusively and copy bytes plus safe metadata. Never
+   truncate a path created concurrently after collision checks.
+4. Record each publication's identity and backup before proceeding.
+5. On failure, reverse publications, restore backups without replacing concurrent
+   files, and remove only directories created by this commit. Report recovery
+   errors and retain any remaining originals for manual recovery.
+6. On success, remove the backups; root-relative cleanup removes staging.
 
-### 1. Zip-Slip Defense
+Unexpected replacement objects are moved to a private recovery area and verified
+before deletion; mismatches are retained. Backup and cleanup roots remain pinned.
+A cross-mount backup rename can fail before modifying that entry. Exclusive-copy
+fallback may be visible while incomplete. A replacement has a visibility gap
+between backup and publication. A cleanup failure can return an error after
+outputs have committed. The destination directory may be created even if decoding
+fails. This is not a crash-durable transaction and does not restore directory
+metadata exactly or isolate other processes.
 
-Every entry name sanitized before staging:
-- `sanitize()` rejects: empty names, absolute paths (Unix or Windows), `..` patterns
-- Applied to both extract and list modes
-- No exception for flat extraction (base name of path is already sanitized)
+## Collision handling and performance
 
-**Verification**: Read `sanitize.go`, check all `rr.Next()` callers pass through `sanitize()`
+Both archive duplicate resolution and destination `--rename` cache the next
+suffix per base name. Previously repeated duplicate searches restarted at one
+and grew quadratically. Unexpected stat errors now terminate probing.
 
-### 2. Symlink/Device Neutralization
+Exact repeated archive names are retained under `(n)` variants. Distinct raw
+names that sanitize to the same source path fail. Flat extraction may merge
+basenames from different source directories, preserving both with suffixes.
+Filesystem aliases fail safely instead of overwriting staged data.
 
-`safeMode()` strips dangerous mode bits:
-- `S_IFLNK` (symlinks stored as regular files)
-- `S_IFBLK`, `S_IFCHR` (block/character devices skipped)
-- `S_ISUID`, `S_ISGID`, `S_ISVTX` (setuid/setgid/sticky removed)
+Streaming uses `io.Copy`; rardecode supplies `WriterTo`. The previous 512 KiB pool
+was bypassed by that interface and has been removed. Integer overflow cannot
+bypass the byte cap or CLI size parsing.
 
-**Rationale**: Symlink with unsanitized target could escape extraction root; devices bypass filesystem checks.
+## Output and exit codes
 
-**Verification**: All `emit()` calls in `extractToStaging()` pass through `safeMode()`
+Single-archive human progress uses a listing pre-pass and ordered entry sizes,
+not output-name lookup. Flat directory entries are omitted from progress;
+unknown or overflowing totals use completed-entry counts. Quiet/JSON modes avoid
+the pre-pass. Human strings are sanitized before terminal display; JSON retains
+original values through `encoding/json` escaping.
 
-### 3. Decompression-Bomb Enforcement
-
-Enforced at two points:
-
-**Stream-time** (per-entry size):
-- `cappedWriter` in `writer.go` wraps destination
-- Each `Write()` accumulates bytes
-- If total exceeds `--max-size`, return error, abandon entry
-- No partial data reaches disk
-
-**Header-time** (entry count):
-- During `listEntries()` iteration, check `len(entries) >= maxEntries`
-- If cap hit, return partial list + `errLimitEntries`
-- Early exit before allocation spirals
-
-**Gaps**: None on native path. Documented limit: entries staged before cap-check are written; cap enforces stream-time cutoff, not pre-staging validation.
-
-### 4. Atomic Writes
-
-Pattern applied universally:
-1. Open temp file in destination directory (same filesystem)
-2. Write entry to staging or ZIP
-3. On entry success: `os.Rename(staged, destination)` — atomic
-4. On any error: `defer os.RemoveAll(stagingDir)` cleans up
-
-**Guarantees**: Destination is never truncated or partial; failed extraction leaves no trace.
-
-### 5. Post-Sanitize Collision Guard
-
-Collision handling via overwrite policies:
-- **Same raw name repeated** (multi-volume re-streaming): Renamed to `name (1)`, `name (2)`, …
-- **Different raw names colliding after sanitization**: Hard error (indicates hostile input, e.g., `a/b` + `a%2Fb` both sanitizing to `a/b`)
-
-**Verification**: Read `stage.go`, check dedup logic in `commitStaged()`
-
-## Mode Semantics
-
-| Mode | Flag | Behavior | Writes | Exit Code |
-|------|------|----------|--------|-----------|
-| Extract | (default) | Preserve directory structure | Yes | 0/1/2/3/4 |
-| Flat | -e, --flat | Extract to single directory | Yes | 0/1/2/3/4 |
-| List | -l, --list | Preview contents only | No | 0/1/2/3/4 |
-| Test | -t, --test | Validate integrity only | No | 0/1/2/3/4 |
-
-**Mutual exclusion**: Only one of -e, -l, -t may be specified; all are mutually exclusive with write flags.
-
-## Overwrite Policies
-
-Determines behavior when destination file exists:
-
-| Policy | Behavior |
-|--------|----------|
-| OverwriteFail (default) | Error immediately, abort this archive |
-| OverwriteOverwrite | Replace destination with staged entry |
-| OverwriteSkip | Keep destination, skip this entry, track skipped count |
-| OverwriteRename | Keep destination, rename entry to `name (n)` |
-
-**Mutual exclusion**: Only one of `--overwrite`, `--skip`, `--rename` may be set.
-
-## Password Handling
-
-Password resolved **once per invocation**, before batch dispatch:
-
-1. If `--password` provided: use it
-2. If encrypted archive detected and no password: prompt on TTY (masked input)
-3. If non-TTY (CI, pipe): fail fast with clear error
-4. Single resolved password reused for all archives in batch
-
-**Rationale**: Prevents multiple TTY prompts in batch; prevents concurrent password races on shared stdin.
-
-## Error Propagation
-
-Errors classified into exit codes (per `main.go:classifyErr`):
-
-| Code | Meaning | rardecode Sentinel |
-|------|---------|-------------------|
-| 0 | Success | — |
-| 1 | Usage error | — |
-| 2 | Wrong/missing password | `ErrBadPassword` (RAR5 only) |
-| 3 | Corrupted entry | `ErrBadFileChecksum` |
-| 4 | Other runtime error | — |
-
-**Batch aggregation** (per `aggregateExit`): Highest-priority code wins (2 > 3 > 4).
-
-**Known gap**: Legacy RAR3/4 archives with wrong passwords may report exit 3 (indistinguishable from corruption in `rardecode`). This is a library limitation, not a bug.
+Exit codes remain 0 success, 1 usage, 2 password, 3 checksum failure, and 4 other
+runtime error. Batch precedence is 2 > 3 > 4. Legacy RAR3/4 wrong passwords may
+produce checksum errors and exit 3; only RAR5 provides reliable password errors.

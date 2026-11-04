@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest Release**: 0.4.0 (2026-09-07) — security hardening + CLI concurrency unification  
+**Latest Release**: 0.5.0 (2026-11-04) — recovery safety, bounded dictionaries, and duplicate-name performance
 **Maturity**: Stable and feature-complete for direct RAR extraction  
 **Active Development**: Paused; driven by user feedback and platform support requests
 

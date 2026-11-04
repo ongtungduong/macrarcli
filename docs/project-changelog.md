@@ -5,6 +5,26 @@ observable output or defaults are called out explicitly.
 
 ## Unreleased
 
+## 0.5.0 — 2026-11-04
+
+### Security and correctness
+- Require Go 1.26.10 to address GO-2026-4970 and GO-2026-6604 in root-confined filesystem operations, plus the standard-library GO-2026-6809 advisory.
+- Keep overwrite backups until successful commit; restore original files and symlinks after failure. Retain backups with a recovery path if restoration fails.
+- Pin destination/staging roots and apply file metadata via opened handles. Exclusive publication never truncates a concurrently created target.
+- Reject case/normalization aliases in staging and unsafe Windows device/stream names. Drive-relative names such as `a:b` remain rejected.
+- Add `--max-dict` (default 256 MiB per decoder; positive override required).
+- Close header-probe readers, inspect every batch input for encrypted headers, and sanitize all human diagnostics/progress.
+- Count discarded flat-mode directories toward entry limits; prevent byte-size arithmetic overflow.
+
+### Performance and progress
+- Cache duplicate-name and destination-rename suffixes to avoid repeated quadratic searches.
+- Remove the unused copy-buffer pool; retain decoder-provided streaming.
+- Match progress to archive order, including renamed/flat/duplicate entries. Unknown or overflowing size totals use entry counts.
+- Preserve header-only listing; document solid-archive decoding costs and the absence of a listing byte/CPU cap.
+
+### Recovery contract
+- Extraction is staged but not crash-atomic. Copy fallback can be visible while incomplete; rollback/cleanup errors are reported. Directory metadata and external concurrent changes are not transactionally restored.
+
 ## 0.4.0 — 2026-09-07
 
 ### Hardened

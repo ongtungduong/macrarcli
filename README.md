@@ -51,6 +51,7 @@ You can also download a `.zip` from the
 ### From source
 
 ```sh
+# Go 1.26.10 or newer (security patches required)
 go build -o bin/macrarcli .
 # or
 make build
@@ -89,15 +90,17 @@ abort the rest. By default a batch runs **concurrently** (`--jobs` defaults to
 so output stays deterministic. Multi-volume sets (`.part1.rar` / `.r00`) are
 followed automatically.
 
-If an archive's contents are encrypted and no `--password` is given,
-`macrarcli` checks the `MACRARCLI_PASSWORD` environment variable, then prompts
-for one (masked, no echo) when run interactively; in a non-interactive context
-(CI, a pipe) with neither set it fails fast instead of hanging. The password
+If no `--password` is given, `macrarcli` checks the `MACRARCLI_PASSWORD`
+environment variable. With neither set, it probes every input for encrypted
+headers, closes each successfully opened probe immediately, and prompts once
+(masked, no echo) if needed. In a non-interactive context (CI, a pipe), detected
+header encryption fails fast instead of hanging. Content-only encryption may
+not be detected by this header probe; supply a password explicitly in that case. The password
 is resolved once per invocation and reused across every archive in a batch —
 never re-prompted per archive. Prefer `MACRARCLI_PASSWORD` over `--password`
 for scripted use: a flag value is visible to other local users via `ps`/
-`/proc/<pid>/cmdline` for the life of the process; an environment variable is
-not.
+`/proc/<pid>/cmdline` for the life of the process. The environment fallback avoids putting the
+password in command-line arguments.
 
 ### Flags
 
@@ -115,17 +118,24 @@ not.
 | `--password <pw>` | Password for encrypted archives. If omitted, falls back to `$MACRARCLI_PASSWORD`, then prompts interactively (see above). |
 | `--jobs <n>` | Process up to `n` archives concurrently — applies to extraction and to `-l`/`-t`. Default: `min(NumCPU, 4)`. Per-job results are still printed in input order. |
 | `--json` | Emit a machine-readable JSON summary on stdout (suppresses the human progress output). Includes a `mode` field (`extract`/`list`/`test`) and per-job `skippedEntries`. |
-| `--max-size <n>` | Cap the total uncompressed size an archive may expand to (decompression-bomb defense). Accepts a plain byte count or a `K`/`M`/`G` suffix. Default `20G`; pass `0` for unlimited. Tripping the cap leaves no output and exits non-zero. Also enforced by `-t`. |
+| `--max-size <n>` | Cap total decoded bytes per archive in extract and test modes. Accepts bytes or a `K`/`M`/`G` suffix (powers of 1024). Default `20G`; `0` disables this cap. Exceeding it fails before extraction commit. |
 | `--max-entries <n>` | Cap the number of entries an archive may contain. Default `200000`; pass `0` for unlimited. Also bounds `-l` and `-t`. |
+| `--max-dict <n>` | Cap each decoder dictionary. Default `256M` (256 MiB); accepts bytes or `K`/`M`/`G`. Must be positive; `0` is rejected. Applies to all modes and header probes. This is not a total process memory cap. |
 | `--version` | Print version and exit. |
 | `-h`, `--help` | Print usage and exit. |
 
-Per-entry **modification time** and **Unix permissions** are preserved.
-Extraction is atomic per archive: entries are staged in a private temporary
-directory first and committed into the destination only once the whole
-archive has decoded successfully — a failure removes the staging directory
-and leaves the destination exactly as it was before the run. Progress is
-written to stderr so stdout stays clean for piping.
+Regular-file **modification time** and safe **Unix permissions** are preserved;
+directory metadata is not restored. Extraction first decodes into a private
+staging directory under the destination, then publishes entries individually.
+Decode failures publish no archive entries. Commit failures attempt rollback;
+failed restoration retains backups and reports their location for recovery.
+This is **not crash-atomic** and cannot promise an exactly unchanged destination
+on every error. See Security below. Progress is written to stderr.
+
+Listing reads headers; it does not enforce `--max-size`. Advancing through a
+solid archive can require decompression. Single-archive human progress uses a
+listing pre-pass; `-q` or `--json` avoids that extra pass. The dictionary and
+entry-count limits apply to listing too, but do not bound CPU time.
 
 ### Exit codes
 
@@ -160,25 +170,47 @@ cp completions/macrarcli.fish ~/.config/fish/completions/macrarcli.fish
 
 ### Security
 
-Untrusted-archive hardening is in place: entry names are sanitized against
-**path traversal (Zip Slip)** and absolute paths, and symlink/device entries
-are neutralized (stored as plain content) so they cannot escape the
-extraction root. An entry's permission bits are also capped on extract: an
-archive can never make a file group- or other-writable, regardless of what
-mode it recorded.
+**Paths and metadata:** extraction rejects paths that escape the root, absolute
+and drive-relative names (including `a:b`), Windows device/stream names, and
+other unsafe Windows components on every platform. Archive symlink/device
+entries become inert regular-file content; group/other-write and special mode
+bits are removed. After the destination is opened, staging, publication,
+rollback, and cleanup use root-relative operations. File metadata is applied
+through open handles so a path swap cannot redirect it outside the root.
 
-**Decompression bombs:** extraction and `-t` both stream entries and are
-bounded by `--max-size`/`--max-entries` **by default** (`20G`/`200000`; pass
-`0` to opt into unlimited); exceeding either cap aborts with no output.
-Duplicate or colliding entry names cannot silently overwrite one another — a
-name that collides only after path sanitization is rejected, and legitimate
-repeats are kept under a renamed entry.
+**Resource limits:** `--max-size` and `--max-entries` default to `20G` and
+`200000` respectively (`0` disables either cap). The entry cap applies to all modes; the byte cap applies to extraction and testing. `--max-dict` separately defaults
+to 256 MiB per decoder. Concurrent jobs have separate decoders; dictionaries,
+other decoder allocations, entry metadata, and runtime overhead all contribute
+to memory use. These controls are not an RSS cap or a CPU/time budget.
 
-**Overwrite safety:** `--overwrite` never writes through a symlink planted at
-the destination path — the collision check uses `lstat`, never `stat`, so a
-symlink is treated as occupied and removed (not followed) before the real
-entry is written. A failure partway through an archive rolls back the entire
-staging directory rather than leaving a partial extraction.
+**Collisions:** exact duplicate names use cached `" (n)"` suffixes. Different
+names that collide after sanitization are rejected. Exclusive staging creation
+also rejects filesystem aliases (such as case or Unicode normalization aliases)
+rather than silently truncating an earlier entry.
+
+**Publication and recovery:** on Unix, a descriptor-relative hard link publishes a completed staged file
+without copying on supported filesystems. On other platforms or when hard links are unavailable, an exclusive-create copy
+claims the output path without replacing an existing file; that copy can be
+visible while incomplete. `--overwrite` first moves the existing file or symlink
+itself into a private backup directory, then publishes the replacement. There
+can be a visibility gap between those steps. A backup rename across a mount
+boundary can fail safely before replacing that entry.
+
+Commit failures attempt to remove this run's published files and restore
+originals. Recovery errors are reported; original backups and unexpected replacement objects
+are retained in `.macrarcli-backup-*` or `.macrarcli-cleanup-*`. Preserve reported
+recovery directories for manual inspection. Successful
+publication followed by backup-cleanup failure also returns an error even though
+outputs are committed. Process crashes, concurrent external changes, and I/O
+failures can leave partial results, backups, or staging data. The destination
+itself may have been created even when decoding fails. No crash durability,
+transaction isolation from other processes, or exact restoration of directory
+metadata is promised.
+
+**Human output:** archive-controlled names and diagnostic text have control
+characters replaced with `?`. JSON retains original strings through the JSON
+encoder; downstream consumers must render them appropriately.
 
 ## Scope & limitations
 
@@ -186,9 +218,15 @@ Lists, extracts (preserving structure or flat), and validates one or more
 RAR archives, with multi-volume and password support, JSON output
 (`--json`), and per-entry overwrite policies (`--overwrite`/`--skip`/
 `--rename`). No ZIP output — this is a direct-extraction tool. Not yet
-supported (see `plans/` for the roadmap):
+supported:
 
-- stdin/stdout streaming, large-file throughput tuning.
+- stdin/stdout streaming.
+- Crash-atomic or crash-durable extraction.
+
+Integrity testing reads each file fully and relies on checksums supported by
+the pinned `rardecode/v2` v2.2.5 decoder. Its RAR file checks use CRC32 when
+present; RAR5 BLAKE2sp hash records are not implemented. A successful read is
+not a guarantee that every entry had a supported content checksum.
 
 ### Filename encoding (legacy / CJK charsets)
 

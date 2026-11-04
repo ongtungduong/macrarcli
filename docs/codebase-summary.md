@@ -1,206 +1,65 @@
 # Codebase Summary
 
-## High-Level Architecture
+macrarcli is a pure-Go RAR CLI: extract with structure, extract flat, list,
+and test integrity. There is no shell-out decoder or ZIP output.
 
-macrarcli is organized as a single-responsibility CLI with a pure-Go extraction engine:
+## Packages
 
-```
-macrarcli (CLI)
-├── CLI input parsing & orchestration (main.go, cli_args.go)
-├── Output formatting (json_output.go, list_output.go)
-└── Extraction Engine (internal/rarutil/)
-    ├── Core operations: extract, list, test (integrity)
-    ├── Security: sanitization, staging, atomic commits
-    └── Utilities: password resolution, progress tracking, batch orchestration
-```
+| Area | Files | Responsibility |
+|------|-------|----------------|
+| CLI | `main.go`, `cli_args.go` | Flags, password probes, ordered progress, batch dispatch, exit codes |
+| Output | `json_output.go`, `list_output.go` | JSON results and control-character-safe human output |
+| Decoder | `extract.go`, `list.go`, `test.go`, `reader_options.go` | Shared password/dictionary options and archive iteration |
+| Staging | `writer.go`, `names.go`, `limits.go`, `sanitize.go` | Exclusive creation, duplicate suffixes, byte caps, safe paths/modes |
+| Commit | `stage.go`, `overwrite.go`, `publish.go`, `rollback.go` | Root-confined publication, collision policies, overwrite backups/recovery |
+| Metadata | `filetimes_*.go` | Apply modification time through an open file handle |
+| Utilities | `batch.go`, `password.go`, `progress.go` | Bounded concurrency, terminal prompt, progress arithmetic |
 
-The CLI layer handles flags, batch orchestration, and output formatting. The engine handles RAR decoding with decompression-bomb defense, Zip-Slip protection, and atomic write semantics.
+## Extraction flow
 
-## Package Layout
+1. Resolve password once. When needed, inspect every input's header and close
+   each successful probe immediately.
+2. Open the destination with `os.OpenRoot`; create a private staging directory
+   under that root and borrow its opened root for decoding.
+3. Sanitize every entry name before flattening. Strip special modes and
+   group/other-write permissions. Stream files with `io.Copy` through the byte
+   limiter; the decoder's `WriterTo` handles its own buffers.
+4. Create staged files exclusively. Directory spelling tracking also rejects
+   filesystem aliases, including implicit parents. Cache duplicate suffixes.
+5. After successful decoding, serialize commits across in-process jobs.
+   Back up overwritten files/symlinks, then publish files using hard links or
+   an exclusive-create copy fallback. All paths remain relative to `os.Root`.
+6. On commit failure, remove this run's published files and restore backups.
+   Report rollback errors and preserve originals that need manual recovery.
+7. Clean up staging through the pinned root; format ordered results.
 
-### `main` Package (Root)
+## Limits and contracts
 
-**Responsibility**: CLI entry point, flag parsing, batch orchestration, output formatting.
+- CLI defaults: 20 GiB decoded output, 200,000 entries, 256 MiB dictionary per
+  decoder, and `min(NumCPU, 4)` jobs. Dictionary size must be positive at the CLI;
+  zero-value backend `Options` selects the 256 MiB default.
+- Byte caps apply to extract/test. Entry and dictionary caps apply to all modes.
+  Flat-mode directories consume the entry budget even though they are not
+  written and do not fire file-progress callbacks.
+- `List` remains header iteration. Solid archives may decompress while advancing;
+  neither listing nor the progress pre-pass has a CPU/time cap.
+- Progress follows archive order, so renamed/flattened names and duplicate sizes
+  cannot corrupt the percentage. Unknown/overflowing size totals use entry counts.
+- JSON preserves raw strings with JSON escaping. Human output replaces control
+  characters; do not reuse raw JSON names directly in a terminal.
+- No crash-atomicity, durability, external-process isolation, or exact directory
+  metadata restoration is promised. Exclusive-copy publication can be visible
+  while incomplete. Recovery backups remain when restoration fails.
+- Windows support remains experimental. Unix tests exercise symlinks; Windows
+  builds are checked separately.
 
-| File | Purpose | ~LOC |
-|------|---------|------|
-| `main.go` | Entry point, flag parsing, mode selection, password resolution, batch dispatch, progress tracking | ~360 |
-| `cli_args.go` | Argument validation, mode/overwrite policy enforcement, size parsing | ~140 |
-| `json_output.go` | JSON formatting for results and listings | ~70 |
-| `list_output.go` | Human table formatting and JSON output for archive listings | ~200 |
+## Testing and dependencies
 
-**Key Functions**
-- `run()` — main CLI orchestrator, flag parsing, mode dispatch, error aggregation
-- `resolveMode()` — enforces -e/-l/-t mutual exclusion
-- `resolveOverwritePolicy()` — enforces overwrite flag mutual exclusion
-- `parseSize()` — parses `--max-size` with K/M/G suffixes
-- `attachProgress()` — pre-pass List() and wires live percentage/throughput display for single-archive human output
-- `reportHuman()` — formats per-job outcomes and batch summary for human output
-- `report()`, `reportJSON()`, `reportTestJSON()` — format results per output mode
+Tests use fake readers, synthetic RAR5 headers, real filesystem collision tests,
+rollback failures, pinned-root path replacement, and duplicate-name benchmarks.
+Optional fixture-based integration tests skip when fixtures are absent.
 
-### `internal/rarutil` Package
-
-**Responsibility**: RAR decoding, entry validation, staging-directory extraction, atomic commit, decompression-bomb enforcement, Zip-Slip defense.
-
-**Design Principle**: Keep concerns focused. Use interfaces to enable synthetic testing without real RAR files (which are proprietary).
-
-#### Core Files
-
-| File | Purpose | ~LOC |
-|------|---------|------|
-| `extract.go` | `Extract()` — stages to temp dir, commits via atomic rename, rolls back on failure | ~80 |
-| `stage.go` | `commitStaged()` — per-entry mv/collision handling, `makeStagingDir()` | ~170 |
-| `list.go` | `List()` — read-only header iteration with bomb-cap bounding | ~80 |
-| `test.go` | `Test()` — checksum-only validation without writes | ~70 |
-| `writer.go` | `cappedWriter` — stream decompression enforcement; respects `--max-size` | ~130 |
-| `sanitize.go` | `sanitize()` (Zip-Slip defense), `safeMode()` (permission hardening) | ~55 |
-| `password.go` | `ResolvePassword()`, `ResolvePasswordStdin()` — TTY prompt or flag | ~60 |
-| `progress.go` | `ProgressTracker` — live throughput/percentage calculation | ~60 |
-| `batch.go` | `RunBatch()`, `TestBatch()`, `ListBatch()` — bounded concurrency, continue-on-error, ordered results | ~86 |
-| `overwrite.go` | `OverwritePolicy` enum + enforcement (fail/overwrite/skip/rename) | ~80 |
-| `nofollow_unix.go`, `nofollow_other.go` | Platform-specific symlink defense: Unix uses `O_NOFOLLOW` flag, Windows no-op | ~10 |
-
-#### Shared Types & Constants
-
-| Item | Purpose |
-|------|---------|
-| `Options` | Configuration tuple: password, overwrite policy, bomb caps, flat mode |
-| `Result`, `Job` | Per-archive result and input specification |
-| `OverwritePolicy` enum | Collision handling: Fail, Overwrite, Skip, Rename |
-| `EntryInfo` | Read-only listing data (name, size, packed size, encrypted, mod time) |
-| `ProgressTracker` | Percentage + throughput calculation from processed size/entry count |
-| `cappedWriter` | Stream wrapper enforcing decompression-bomb size cap |
-
-## Data Flow: Single Archive Extraction
-
-```
-1. main.go: Parse flags, build Job(src, dst, opts)
-2. Extract(srcRar, destDir, opts):
-   a. makeStagingDir() → create private temp directory
-   b. extractToStaging():
-      - Open RAR via rardecode
-      - For each entry:
-        * sanitize(name) → Zip-Slip defense (reject traversal, absolute paths)
-        * safeMode(perms) → strip dangerous bits (symlinks, devices)
-        * emit to staging via cappedWriter (enforces --max-size)
-        * callback OnEntry for progress
-      - On any error: return, let Extract clean up
-   c. commitStaged(stagingDir, destDir, opts):
-      - Walk staged entries
-      - Check destination collisions
-      - Per-entry os.Rename() to destination
-      - On collision per overwrite policy: fail, overwrite, skip, or rename
-      - Return list of skipped entries on OverwriteSkip
-   d. defer os.RemoveAll(stagingDir) cleans up on exit
-3. Format result (human or JSON), print summary
-```
-
-## Key Abstractions
-
-### Staging Directory Pattern
-
-All extraction goes to a private temp directory first, then atomically committed:
-- **Advantages**: Clean separation of concerns, safe rollback on any error, no partial destination
-- **Guarantees**: Destination is never partial/truncated; failed extraction leaves no trace
-- **Implementation**: `makeStagingDir()` creates `.macrarcli-staging-*` in destination; each entry streamed to staging via `cappedWriter`; `commitStaged()` then per-entry renames entries into place
-
-### `cappedWriter` Stream Enforcement
-
-```go
-type cappedWriter struct {
-    w         io.Writer
-    cap       int64
-    written   int64
-}
-```
-
-Wraps the destination stream and enforces `--max-size` at write time:
-- Each Write() adds to total
-- If total exceeds cap, Write() returns error
-- Entry is abandoned, no partial write reaches disk
-
-### Sanitization & Collision Guard
-
-- `sanitize(name)` rejects: empty, absolute, `..`, `../../etc/passwd` (Zip-Slip defense)
-- `safeMode(mode)` strips: `S_IFLNK`, `S_IFBLK`, `S_IFCHR`, setuid/setgid/sticky bits
-- Post-sanitize collision handling: same name repeated renamed to `(1)`, `(2)`, …; different names colliding after sanitization is a hard error
-
-### OverwritePolicy Enum
-
-Determines destination collision behavior:
-- **OverwriteFail** (0): Error if destination exists (default, fail-closed)
-- **OverwriteOverwrite**: Replace existing file
-- **OverwriteSkip**: Silently skip entry, continue batch
-- **OverwriteRename**: Keep both, rename collider to `name (n)`
-
-## Batch Processing
-
-Three batch functions share a common pattern (bounded concurrency, continue-on-error, ordered results):
-
-- `RunBatch(jobs []Job, opts, maxParallel, onStart)`: Extracts each job via `Extract()`
-- `TestBatch(srcs []string, opts, maxParallel)`: Validates each archive via `Test()`
-- `ListBatch(srcs []string, opts, maxParallel)`: Lists each archive via `List()`
-
-All three:
-- Dispatch to a bounded worker pool (semaphore) with `maxParallel` slots
-- Collect results in input order (not completion order) for deterministic output
-- Continue on error: failed input doesn't abort the batch
-- Return results matching input order
-
-## Security Invariants
-
-Must be preserved in any change to `sanitize.go`, `writer.go`, `stage.go`:
-
-1. **Zip-Slip defense**: Every entry name passes `sanitize()` before write
-   - Rejects empty, absolute, traversal names
-   - Applies uniformly to all modes (extract, list, test)
-
-2. **Symlink/device neutralization**: `safeMode()` strips dangerous mode bits
-   - Symlink entries stored as regular files (content preserved, links defeated)
-   - Device entries skipped (cannot traverse filesystem)
-
-3. **Decompression-bomb caps**: Enforced at write time via `cappedWriter`
-   - `--max-size`: abort if total uncompressed bytes exceed limit
-   - `--max-entries`: abort if entry count exceeds limit (checked per-header iteration)
-   - Also bounds `--list` and `--test` (read-only paths)
-
-4. **Atomic writes**: Never partial/truncated outputs
-   - Extract to staging dir first
-   - Each entry only committed via os.Rename on success
-   - Any error before final commit removes staging, leaves destination unchanged
-
-5. **Post-sanitize collision guard**: `dedupVariant()` prevents data loss
-   - Same archive entry (multi-volume re-streaming): renamed to `(1)`, `(2)`, …
-   - Different entries colliding after sanitization: hard error (hostile input)
-
-## Testing Approach
-
-**Interface-driven testing**: Core logic (sanitization, bomb caps) tested via interface seams + synthetic inputs. No real RAR files required for critical tests.
-
-**Coverage areas**:
-- Sanitization (traversal, absolute paths, encoding)
-- Bomb-cap enforcement (entry count, total size)
-- Batch concurrency (ordering, continue-on-error)
-- Overwrite policies (collision handling)
-- Password resolution (TTY, flag, environment)
-
-**Fixture-gated tests**: If `testdata/*.rar` exists, end-to-end extraction tests verify real archives.
-
-## Dependency Map
-
-**Production**
-- `github.com/nwaples/rardecode/v2` — pure-Go RAR decoder
-- `golang.org/x/term` — masked password TTY prompt
-- Go standard library (`io`, `os`, `flag`, `path`, `encoding/json`, etc.)
-
-**Development/Testing**
-- Test fixtures in `testdata/` (optional, tests skip if absent)
-
-**No dynamic imports** — all dependencies declared in `go.mod`.
-
-## Module Info
-
-- **Module**: `github.com/ongtungduong/macrarcli`
-- **Go version**: 1.26.2
-- **Binary name**: `macrarcli`
-- **Latest version**: 0.4.0 (2026-09-07)
+Runtime dependencies are `rardecode/v2`, `x/term`, and `x/sys`. Go 1.26.10 is the
+minimum toolchain, including fixes for GO-2026-4970 and GO-2026-6604. See
+`docs/project-changelog.md` for release changes. Version 0.5.0 (2026-11-04)
+contains the security and performance hardening described here.

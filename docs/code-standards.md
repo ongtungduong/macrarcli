@@ -78,7 +78,7 @@ Named with `-er` suffix when describing behavior:
 - **Exported functions**: Doc comments (start with function name)
   ```go
   // Extract reads the RAR archive at srcRar and writes its contents
-  // to destDir, staging to a temp directory and committing atomically.
+  // to destDir, staging first and retaining overwrite backups for rollback.
   func Extract(srcRar, destDir string, opts Options) ([]string, error) { ... }
   ```
 
@@ -169,7 +169,7 @@ Before committing changes to `sanitize.go`, `writer.go`, or `stage.go`:
 - [ ] Zip-Slip invariant preserved: all entry names sanitized before write
 - [ ] Symlink/device bits stripped: `safeMode()` called on all mode values
 - [ ] Bomb caps enforced: `cappedWriter` applied for stream writes, entry count checked
-- [ ] Atomic writes: temp file + rename pattern intact, no partial outputs on error
+- [ ] Staged publication: root confinement, exclusive creation, and recoverable overwrite backups preserved
 - [ ] Post-sanitize collision guard: collision handling prevents data loss
 - [ ] Test added: synthetic or fixture-gated test verifying the invariant
 
