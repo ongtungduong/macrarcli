@@ -49,3 +49,11 @@ Parallel implementation agents produced the initial patches. The parent
 completed work after some agents hit usage limits. An independent follow-up
 review identified additional filesystem races; these received regression tests
 and fixes before final verification.
+
+## Release verification follow-up (2026-11-04)
+
+Linux CI caught a file-to-directory substitution that reused the original inode.
+`os.SameFile` compares device/inode without checking object type. Recovery now
+also compares file types before treating two snapshots as the same object. The
+existing substitution regression exercises this on Linux; release is gated on
+the updated cross-platform CI result.
