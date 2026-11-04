@@ -76,7 +76,7 @@ func commitPinned(root *os.Root, staging string, stage *os.Root, opts Options) (
 	if err != nil {
 		return nil, err
 	}
-	if !os.SameFile(current, expected) {
+	if !sameObject(current, expected) {
 		return nil, fmt.Errorf("staging path changed concurrently")
 	}
 	tx := &commitTransaction{root: root}

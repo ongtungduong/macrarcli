@@ -13,6 +13,12 @@ type commitDir struct {
 	info fs.FileInfo
 }
 
+// SameFile compares device/inode only. Linux can reuse a freed inode for a
+// different object type, so a file-to-directory substitution must also fail.
+func sameObject(actual, expected fs.FileInfo) bool {
+	return actual != nil && expected != nil && actual.Mode().Type() == expected.Mode().Type() && os.SameFile(actual, expected)
+}
+
 func (tx *commitTransaction) recoveryDir() error {
 	if tx.backupRoot != nil {
 		return nil
@@ -40,7 +46,7 @@ func (tx *commitTransaction) backupFile(name string, expected fs.FileInfo) (stri
 		return "", err
 	}
 	got, err := tx.backupRoot.Lstat(filepath.Base(backup))
-	if err != nil || !os.SameFile(got, expected) {
+	if err != nil || !sameObject(got, expected) {
 		tx.preserveBackup = true
 		return "", fmt.Errorf("backup %q changed concurrently; retained at %q: %w", name, filepath.Join(tx.root.Name(), backup), errors.Join(err, fs.ErrInvalid))
 	}
@@ -62,7 +68,7 @@ func (tx *commitTransaction) removePublished(name string, expected fs.FileInfo, 
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(got, expected) {
+	if !sameObject(got, expected) {
 		return fmt.Errorf("rollback: %q changed concurrently; retained at %q", name, filepath.Join(tx.root.Name(), quarantine))
 	}
 	// Nonrecursive even for directories: unrelated contents must survive.
@@ -80,7 +86,7 @@ func cleanupStaging(root *os.Root, name string, stage *os.Root) error {
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(current, expected) {
+	if !sameObject(current, expected) {
 		return fmt.Errorf("staging path %q changed concurrently; preserved for recovery", name)
 	}
 	private, err := makeRootTempDir(root, ".macrarcli-cleanup-")
@@ -98,7 +104,7 @@ func cleanupStaging(root *os.Root, name string, stage *os.Root) error {
 		return err
 	}
 	current, err = privateRoot.Lstat("staging")
-	if err != nil || !os.SameFile(current, expected) {
+	if err != nil || !sameObject(current, expected) {
 		return fmt.Errorf("staging changed concurrently; retained at %q: %w", filepath.Join(root.Name(), moved), errors.Join(err, fs.ErrInvalid))
 	}
 	if err := privateRoot.RemoveAll("staging"); err != nil {
